@@ -12,6 +12,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
+    raw_preview,
     thumbnail_cache::{CacheKey, ThumbnailCache},
     transfer_manager::TransferManager,
 };
@@ -85,7 +86,7 @@ fn kind(path: &str) -> Result<Kind, SftpError> {
         .map(|(_, ext)| ext.to_ascii_lowercase())
         .unwrap_or_default();
     match extension.as_str() {
-        "jpg" | "jpeg" | "png" => Ok(Kind::Image),
+        "jpg" | "jpeg" | "png" | "dng" | "cr2" | "nef" | "arw" => Ok(Kind::Image),
         "pdf" => Ok(Kind::Pdf),
         // Explicit text types, plus extensionless files and dotfiles.
         "txt" | "md" | "markdown" | "log" | "csv" | "tsv" | "json" | "yaml" | "yml" | "toml"
@@ -297,8 +298,11 @@ async fn load_thumbnail(
     busy: impl Fn() -> bool,
 ) -> Result<Vec<u8>, SftpError> {
     if kind(path)? != Kind::Image {
-        return Err(error("Thumbnails are available for JPEG and PNG images"));
+        return Err(error(
+            "Thumbnails are available for JPEG, PNG, and supported RAW images",
+        ));
     }
+    let raw = raw_preview::supports(path);
     let generation = cache.generation(session_id).await;
     let attrs = {
         let sftp = session.lock().await;
@@ -307,9 +311,11 @@ async fn load_thumbnail(
             .map_err(|e| error(e.to_string()))?
     };
     if attrs.file_type() != russh_sftp::protocol::FileType::File
-        || attrs.size.is_none_or(|size| size > THUMBNAIL_SOURCE_LIMIT)
+        || attrs
+            .size
+            .is_none_or(|size| !raw && size > THUMBNAIL_SOURCE_LIMIT)
     {
-        return Err(error("Automatic thumbnails require a regular image up to 8 MiB. Use Quick Look to preview this file."));
+        return Err(error("Automatic thumbnails require a regular file with a known size. JPEG/PNG sources are limited to 8 MiB. Use Quick Look to preview larger images."));
     }
     let key = attrs.mtime.map(|modified| CacheKey {
         session: session_id.into(),
@@ -342,25 +348,38 @@ async fn load_thumbnail(
         {
             return Err(error("The image changed before loading"));
         }
-        let bytes = read_thumbnail_source(&mut file, token, &busy).await?;
+        let (bytes, orientation) = if raw {
+            let jpeg = raw_preview::extract(
+                &mut file,
+                before.size.unwrap_or(0),
+                THUMBNAIL_SOURCE_LIMIT,
+                true,
+                token,
+                &busy,
+            )
+            .await?;
+            (jpeg.bytes, jpeg.orientation)
+        } else {
+            (read_thumbnail_source(&mut file, token, &busy).await?, None)
+        };
         let after = file.metadata().await.map_err(|e| error(e.to_string()))?;
         if before.size != after.size
             || before.mtime != after.mtime
-            || bytes.len() as u64 != before.size.unwrap_or(0)
+            || (!raw && bytes.len() as u64 != before.size.unwrap_or(0))
         {
             return Err(error("The image changed while loading"));
         }
-        Ok(bytes)
+        Ok((bytes, orientation))
     }
     .await;
     let _ = file.shutdown().await;
-    let bytes = read?;
+    let (bytes, orientation) = read?;
     if busy() {
         return Err(SftpError::PreviewDeferred);
     }
     let bytes = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        image_preview_at(&bytes, 320)
+        image_preview_oriented(&bytes, 320, orientation)
     })
     .await
     .map_err(|e| error(e.to_string()))??;
@@ -409,6 +428,7 @@ async fn load_preview(
     permit: tokio::sync::OwnedSemaphorePermit,
 ) -> Result<Vec<u8>, SftpError> {
     let file_kind = kind(path)?;
+    let raw = raw_preview::supports(path);
     let mut file = {
         let sftp = session.lock().await;
         let attrs = sftp
@@ -433,12 +453,17 @@ async fn load_preview(
         } else {
             SOURCE_LIMIT
         };
-        if file_kind != Kind::Text && size > limit {
+        if file_kind != Kind::Text && !raw && size > limit {
             return Err(error(
                 "This file exceeds the 32 MiB preview limit. Download it to open it.",
             ));
         }
-        let bytes = read_bounded(&mut file, limit, token).await?;
+        let (bytes, orientation) = if raw {
+            let jpeg = raw_preview::extract(&mut file, size, limit, false, token, || false).await?;
+            (jpeg.bytes, jpeg.orientation)
+        } else {
+            (read_bounded(&mut file, limit, token).await?, None)
+        };
         let after = file.metadata().await.map_err(|e| error(e.to_string()))?;
         if before.size != after.size || before.mtime != after.mtime {
             return Err(error(
@@ -446,7 +471,7 @@ async fn load_preview(
             ));
         }
         let truncated = bytes.len() as u64 > limit;
-        if file_kind != Kind::Text && (truncated || bytes.len() as u64 != size) {
+        if file_kind != Kind::Text && (truncated || (!raw && bytes.len() as u64 != size)) {
             return Err(error("The file changed or exceeds the preview limit"));
         }
         let bytes = match file_kind {
@@ -461,7 +486,8 @@ async fn load_preview(
                 return tokio::task::spawn_blocking(move || {
                     // Keep the permit until decoding finishes, even on cancellation.
                     let _permit = permit;
-                    image_preview(&bytes).map(|bytes| response(file_kind, size, false, bytes))
+                    image_preview_oriented(&bytes, 2048, orientation)
+                        .map(|bytes| response(file_kind, size, false, bytes))
                 })
                 .await
                 .map_err(|e| error(e.to_string()))?;
@@ -533,11 +559,11 @@ fn text(bytes: &[u8], truncated: bool) -> Result<String, SftpError> {
     Ok(text)
 }
 
-fn image_preview(bytes: &[u8]) -> Result<Vec<u8>, SftpError> {
-    image_preview_at(bytes, 2048)
-}
-
-fn image_preview_at(bytes: &[u8], edge: u32) -> Result<Vec<u8>, SftpError> {
+fn image_preview_oriented(
+    bytes: &[u8],
+    edge: u32,
+    orientation: Option<image::metadata::Orientation>,
+) -> Result<Vec<u8>, SftpError> {
     let format =
         image::guess_format(bytes).map_err(|_| error("This image could not be decoded"))?;
     if !matches!(format, ImageFormat::Jpeg | ImageFormat::Png) {
@@ -557,7 +583,12 @@ fn image_preview_at(bytes: &[u8], edge: u32) -> Result<Vec<u8>, SftpError> {
             "This image is too large to decode safely. Download it to open it.",
         ));
     }
-    let orientation = decoder.orientation().map_err(|e| error(e.to_string()))?;
+    // Container orientation wins for embedded JPEGs. Apply it exactly once;
+    // the JPEG may carry the same EXIF orientation or no orientation at all.
+    let orientation = match orientation {
+        Some(orientation) => orientation,
+        None => decoder.orientation().map_err(|e| error(e.to_string()))?,
+    };
     let mut image = DynamicImage::from_decoder(decoder).map_err(|e| error(e.to_string()))?;
     image.apply_orientation(orientation);
     if image.width() > edge || image.height() > edge {
@@ -582,6 +613,8 @@ mod tests {
         bytes: Vec<u8>,
         closed: Arc<AtomicUsize>,
         opened: Arc<AtomicUsize>,
+        bytes_read: Arc<AtomicUsize>,
+        change_after_read: bool,
         reported_size: Option<u64>,
         mode: u32,
     }
@@ -593,7 +626,11 @@ mod tests {
                 attrs: FileAttributes {
                     size: self.reported_size.or(Some(self.bytes.len() as u64)),
                     permissions: Some(self.mode),
-                    mtime: Some(1),
+                    mtime: Some(
+                        1 + u32::from(
+                            self.change_after_read && self.bytes_read.load(Ordering::SeqCst) > 0,
+                        ),
+                    ),
                     ..FileAttributes::empty()
                 },
             }
@@ -636,11 +673,12 @@ mod tests {
             if offset >= self.bytes.len() as u64 {
                 return Err(StatusCode::Eof);
             }
+            let end = (offset as usize + len as usize).min(self.bytes.len());
+            self.bytes_read
+                .fetch_add(end - offset as usize, Ordering::SeqCst);
             Ok(Data {
                 id,
-                data: self.bytes
-                    [offset as usize..(offset as usize + len as usize).min(self.bytes.len())]
-                    .to_vec(),
+                data: self.bytes[offset as usize..end].to_vec(),
             })
         }
         async fn close(&mut self, id: u32, _handle: String) -> Result<Status, StatusCode> {
@@ -654,18 +692,28 @@ mod tests {
         }
     }
 
-    async fn test_session(
-        bytes: Vec<u8>,
-        reported_size: Option<u64>,
-        mode: u32,
-    ) -> (
+    type TestConnection = (
         Arc<tokio::sync::Mutex<russh_sftp::client::SftpSession>>,
         Arc<AtomicUsize>,
         Arc<AtomicUsize>,
-    ) {
+    );
+
+    async fn test_session(bytes: Vec<u8>, reported_size: Option<u64>, mode: u32) -> TestConnection {
+        test_session_counted(bytes, reported_size, mode, false)
+            .await
+            .0
+    }
+
+    async fn test_session_counted(
+        bytes: Vec<u8>,
+        reported_size: Option<u64>,
+        mode: u32,
+        change_after_read: bool,
+    ) -> (TestConnection, Arc<AtomicUsize>) {
         let (client, server) = tokio::io::duplex(1024 * 1024);
         let closed = Arc::new(AtomicUsize::new(0));
         let opened = Arc::new(AtomicUsize::new(0));
+        let bytes_read = Arc::new(AtomicUsize::new(0));
         tokio::spawn(russh_sftp::server::run(
             server,
             TestServer {
@@ -674,10 +722,15 @@ mod tests {
                 mode,
                 closed: closed.clone(),
                 opened: opened.clone(),
+                bytes_read: bytes_read.clone(),
+                change_after_read,
             },
         ));
         let session = russh_sftp::client::SftpSession::new(client).await.unwrap();
-        (Arc::new(tokio::sync::Mutex::new(session)), closed, opened)
+        (
+            (Arc::new(tokio::sync::Mutex::new(session)), closed, opened),
+            bytes_read,
+        )
     }
 
     async fn permit() -> tokio::sync::OwnedSemaphorePermit {
@@ -706,6 +759,181 @@ mod tests {
         file.read_to_end(&mut downloaded).await.unwrap();
         file.shutdown().await.unwrap();
         assert_eq!(downloaded, source);
+    }
+
+    #[tokio::test]
+    async fn large_raw_preview_reads_ranges_then_original_download_still_matches() {
+        let mut jpeg = Cursor::new(Vec::new());
+        DynamicImage::new_rgb8(10, 20)
+            .write_to(&mut jpeg, ImageFormat::Jpeg)
+            .unwrap();
+        let source = raw_preview::tests::fixture(jpeg.get_ref(), true, true);
+        let ((session, closed, opened), bytes_read) =
+            test_session_counted(source.clone(), Some(256 * 1024 * 1024), 0o100644, false).await;
+        let result = load_preview(
+            session.clone(),
+            "/camera.CR2",
+            &CancellationToken::new(),
+            permit().await,
+        )
+        .await
+        .unwrap();
+        let header_len = u32::from_le_bytes(result[..4].try_into().unwrap()) as usize;
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&result[4..4 + header_len]).unwrap();
+        assert_eq!(metadata["kind"], "image");
+        assert_eq!(metadata["source_size"], 256 * 1024 * 1024);
+        assert_eq!(metadata["truncated"], false);
+        let image = image::load_from_memory(&result[4 + header_len..]).unwrap();
+        assert_eq!((image.width(), image.height()), (20, 10));
+        assert!(bytes_read.load(Ordering::SeqCst) < jpeg.get_ref().len() + 256);
+        assert_eq!(closed.load(Ordering::SeqCst), 1);
+        assert_eq!(opened.load(Ordering::SeqCst), 1);
+        let mut file = session.lock().await.open("/camera.CR2").await.unwrap();
+        let mut downloaded = Vec::new();
+        file.read_to_end(&mut downloaded).await.unwrap();
+        file.shutdown().await.unwrap();
+        assert_eq!(downloaded, source);
+    }
+
+    #[tokio::test]
+    async fn raw_thumbnails_cache_only_the_rendered_jpeg_and_close_on_failure() {
+        let mut jpeg = Cursor::new(Vec::new());
+        DynamicImage::new_rgb8(800, 400)
+            .write_to(&mut jpeg, ImageFormat::Jpeg)
+            .unwrap();
+        let source = raw_preview::tests::fixture(jpeg.get_ref(), false, false);
+        let ((session, closed, opened), bytes_read) =
+            test_session_counted(source, Some(256 * 1024 * 1024), 0o100644, false).await;
+        let directory = tempfile::tempdir().unwrap();
+        let cache = ThumbnailCache::new();
+        let token = CancellationToken::new();
+        let first = load_thumbnail(
+            session.clone(),
+            "raw",
+            "/camera.nef",
+            &token,
+            permit().await,
+            &cache,
+            directory.path(),
+            || false,
+        )
+        .await
+        .unwrap();
+        let image = image::load_from_memory(&first).unwrap();
+        assert_eq!((image.width(), image.height()), (160, 320));
+        let read = bytes_read.load(Ordering::SeqCst);
+        assert!(read < jpeg.get_ref().len() + 256);
+        let second = load_thumbnail(
+            session,
+            "raw",
+            "/camera.nef",
+            &token,
+            permit().await,
+            &cache,
+            directory.path(),
+            || false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(bytes_read.load(Ordering::SeqCst), read);
+        assert_eq!(closed.load(Ordering::SeqCst), 1);
+        assert_eq!(opened.load(Ordering::SeqCst), 1);
+        let (session, closed, _) =
+            test_session(b"invalid raw container".to_vec(), None, 0o100644).await;
+        assert!(load_preview(session, "/bad.arw", &token, permit().await)
+            .await
+            .is_err());
+        assert_eq!(closed.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn raw_metadata_changes_are_rejected_before_decoding_or_caching() {
+        let source = raw_preview::tests::fixture(&[0xff, 0xd8, 0xff, 1], true, false);
+        let ((session, closed, _), _) = test_session_counted(source, None, 0o100644, true).await;
+        let result = load_preview(
+            session.clone(),
+            "/changed.dng",
+            &CancellationToken::new(),
+            permit().await,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(SftpError::ProtocolError(message)) if message.contains("changed while loading"))
+        );
+        assert_eq!(closed.load(Ordering::SeqCst), 1);
+        let directory = tempfile::tempdir().unwrap();
+        let cache = ThumbnailCache::new();
+        let source = raw_preview::tests::fixture(&[0xff, 0xd8, 0xff, 1], false, true);
+        let ((session, closed, _), _) = test_session_counted(source, None, 0o100644, true).await;
+        let result = load_thumbnail(
+            session,
+            "s",
+            "/changed.dng",
+            &CancellationToken::new(),
+            permit().await,
+            &cache,
+            directory.path(),
+            || false,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(SftpError::ProtocolError(message)) if message.contains("changed while loading"))
+        );
+        assert_eq!(closed.load(Ordering::SeqCst), 1);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    /// Optional compatibility gate for locally supplied camera originals.
+    /// Keep large photos and their licensing outside the repository.
+    #[tokio::test]
+    #[ignore = "Set ANYSCP_RAW_SAMPLES to a directory of camera DNG/CR2/NEF/ARW originals"]
+    async fn local_camera_samples() {
+        let directory = std::env::var("ANYSCP_RAW_SAMPLES").expect("ANYSCP_RAW_SAMPLES directory");
+        let mut count = 0;
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !entry.file_type().unwrap().is_file() || !raw_preview::supports(&name) {
+                continue;
+            }
+            let source = std::fs::read(entry.path()).unwrap();
+            let size = source.len();
+            let path = format!("/{name}");
+            let ((session, closed, _), reads) =
+                test_session_counted(source, None, 0o100644, false).await;
+            let token = CancellationToken::new();
+            let result = load_preview(session.clone(), &path, &token, permit().await)
+                .await
+                .expect(&name);
+            let header_len = u32::from_le_bytes(result[..4].try_into().unwrap()) as usize;
+            let image = image::load_from_memory(&result[4 + header_len..]).unwrap();
+            assert!(image.width() <= 2048 && image.height() <= 2048);
+            let preview_reads = reads.load(Ordering::SeqCst);
+            assert!(preview_reads <= SOURCE_LIMIT as usize + 256 * 1024);
+            let temp = tempfile::tempdir().unwrap();
+            let result = load_thumbnail(
+                session,
+                "camera",
+                &path,
+                &token,
+                permit().await,
+                &ThumbnailCache::new(),
+                temp.path(),
+                || false,
+            )
+            .await
+            .expect(&name);
+            let thumbnail = image::load_from_memory(&result).unwrap();
+            assert!(thumbnail.width() <= 320 && thumbnail.height() <= 320);
+            let thumbnail_reads = reads.load(Ordering::SeqCst) - preview_reads;
+            assert!(thumbnail_reads <= THUMBNAIL_SOURCE_LIMIT as usize + 256 * 1024);
+            assert_eq!(closed.load(Ordering::SeqCst), 2);
+            println!("{name}: source={size}, Quick Look reads={preview_reads} ({}x{}), thumbnail reads={thumbnail_reads} ({}x{})", image.width(), image.height(), thumbnail.width(), thumbnail.height());
+            count += 1;
+        }
+        assert!(count > 0, "No supported camera files found");
     }
 
     #[tokio::test]
@@ -915,6 +1143,16 @@ mod tests {
         assert_eq!(kind("/.bashrc").unwrap(), Kind::Text);
         assert!(kind("/file.zip").is_err());
         assert!(kind("/file.mov").is_err());
+        for extension in ["DNG", "CR2", "NEF", "ARW"] {
+            let path = format!("/camera.{extension}");
+            assert_eq!(kind(&path).unwrap(), Kind::Image);
+            assert!(raw_preview::supports(&path));
+        }
+        for extension in ["CR3", "RAF", "ORF", "raw", "tiff"] {
+            let path = format!("/camera.{extension}");
+            assert!(kind(&path).is_err());
+            assert!(!raw_preview::supports(&path));
+        }
     }
 
     #[test]
@@ -922,10 +1160,13 @@ mod tests {
         let image = DynamicImage::new_rgba8(2500, 2);
         let mut encoded = Cursor::new(Vec::new());
         image.write_to(&mut encoded, ImageFormat::Png).unwrap();
-        let preview = image::load_from_memory(&image_preview(encoded.get_ref()).unwrap()).unwrap();
+        let preview = image::load_from_memory(
+            &image_preview_oriented(encoded.get_ref(), 2048, None).unwrap(),
+        )
+        .unwrap();
         assert_eq!(preview.width(), 2048);
         assert_eq!(preview.to_rgba8().get_pixel(0, 0).0[3], 0);
-        assert!(image_preview(b"invalid").is_err());
+        assert!(image_preview_oriented(b"invalid", 2048, None).is_err());
     }
 
     #[test]
@@ -939,7 +1180,19 @@ mod tests {
         oriented.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
         oriented.extend_from_slice(exif);
         oriented.extend_from_slice(&jpeg.get_ref()[2..]);
-        let result = image::load_from_memory(&image_preview(&oriented).unwrap()).unwrap();
+        let result =
+            image::load_from_memory(&image_preview_oriented(&oriented, 2048, None).unwrap())
+                .unwrap();
+        assert_eq!((result.width(), result.height()), (20, 10));
+        let result = image::load_from_memory(
+            &image_preview_oriented(
+                &oriented,
+                2048,
+                Some(image::metadata::Orientation::Rotate90),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         assert_eq!((result.width(), result.height()), (20, 10));
     }
 
