@@ -204,11 +204,13 @@ pub async fn sftp_open(
 
 /// Close and remove an SFTP session.
 #[tauri::command]
-#[instrument(skip(sftp_manager), fields(sftp_session_id = %sftp_session_id))]
+#[instrument(skip(sftp_manager, preview_manager), fields(sftp_session_id = %sftp_session_id))]
 pub async fn sftp_close(
     sftp_session_id: String,
     sftp_manager: State<'_, Arc<SftpManager>>,
+    preview_manager: State<'_, super::preview::PreviewManager>,
 ) -> Result<(), SftpError> {
+    preview_manager.cancel_session(&sftp_session_id);
     // Grab the Arc before removing from the map.
     let sftp_arc = {
         let session_ref = sftp_manager.get_session(&sftp_session_id)?;

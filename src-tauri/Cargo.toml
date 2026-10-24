@@ -53,6 +53,9 @@ notify = { version = "7", default-features = false, features = ["macos_kqueue"] 
 # SFTP
 russh-sftp = "2.1"
 
+# Preview decoding is deliberately restricted to JPEG and PNG.
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+
 # Cancellation tokens for in-flight transfers
 tokio-util = { version = "0.7" }
 

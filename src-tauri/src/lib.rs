@@ -200,9 +200,13 @@ pub fn run() {
             Ok(())
         })
         .manage(SshManager::new())
+        .manage(sftp::preview::PreviewManager::new())
         .invoke_handler(tauri::generate_handler![
             // SFTP — session & filesystem
             sftp::commands::sftp_open,
+            sftp::preview::sftp_preview_begin,
+            sftp::preview::sftp_preview_read,
+            sftp::preview::sftp_preview_cancel,
             sftp::commands::sftp_close,
             sftp::commands::sftp_list_dir,
             sftp::commands::sftp_home_dir,

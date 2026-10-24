@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod preview;
 pub mod transfer_manager;
 
 use dashmap::DashMap;
