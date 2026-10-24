@@ -13,6 +13,7 @@ import { editorLaunchErrorMessage } from "../../lib/editor-errors";
 import { conflictingNames } from "../../lib/drop-conflicts";
 import { toast } from "../../stores/toast-store";
 import type { EditorConfig } from "../../stores/settings-store";
+import { QuickLook } from "../explorer/QuickLook";
 
 interface ExplorerViewProps {
   /** The transport session id (sftp_session_id or scp_session_id). */
@@ -43,7 +44,10 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
   const replaceTabId = useTabStore((s) => s.replaceTabId);
   const isRoot = useSftpStore((s) => s.sessions.get(sessionId)?.username === "root");
 
-  const provider = useMemo(() => createSftpProvider(sessionId), [sessionId]);
+  const provider = useMemo(() => createSftpProvider(sessionId, transport), [sessionId, transport]);
+  const [preview, setPreview] = useState<{ entry: ExplorerEntry; entries: ExplorerEntry[] } | null>(null);
+  const closePreview = useCallback(() => setPreview(null), []);
+  useEffect(() => { setPreview(null); }, [sessionId, transport, session?.currentPath, isActive]);
 
   // ─── Drag-and-drop (OS → App) ─────────────────────────────────────────────
 
@@ -805,6 +809,9 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
         onSetClipboard={handleSetClipboard}
         onNavigate={(path) => void loadDirectory(path)}
         onDownload={(entry) => void handleDownload(entry)}
+        onPreview={isActive && provider.preview ? (entry, entries) => setPreview({
+          entry, entries: entries.filter((item) => provider.preview!.supports(item)),
+        }) : undefined}
         onDownloadMany={(entries) => void handleDownloadMany(entries)}
         onDelete={handleDelete}
         onRename={handleRename}
@@ -825,6 +832,11 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
         busy={busy}
       />
 
+      {preview && isActive && provider.preview && (
+        <QuickLook adapter={provider.preview} entry={preview.entry} entries={preview.entries}
+          onChange={(entry) => setPreview((current) => current ? { ...current, entry } : null)}
+          onClose={closePreview} onDownload={(entry) => void handleDownload(entry)} />
+      )}
       {isDragOver && (
         <ExplorerDropZone
           path={dropTargetDir ?? session.currentPath}

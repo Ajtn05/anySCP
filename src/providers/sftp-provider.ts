@@ -1,5 +1,7 @@
 import type { SftpEntry } from "../types/sftp";
 import type { ExplorerEntry, ProviderCapabilities, FileSystemProvider } from "../types/explorer";
+import { createSftpPreviewAdapter } from "../lib/preview";
+import type { Transport } from "../lib/explorer-transport";
 
 export function toExplorerEntry(e: SftpEntry): ExplorerEntry {
   return {
@@ -32,11 +34,12 @@ const SFTP_CAPABILITIES: ProviderCapabilities = {
   canPresignUrl: false,
 };
 
-export function createSftpProvider(sftpSessionId: string): FileSystemProvider {
+export function createSftpProvider(sftpSessionId: string, transport: Transport = "sftp"): FileSystemProvider {
   return {
     type: "sftp",
     sessionId: sftpSessionId,
     capabilities: SFTP_CAPABILITIES,
+    preview: transport === "sftp" ? createSftpPreviewAdapter(sftpSessionId) : undefined,
     joinPath(parent: string, child: string): string {
       return parent.endsWith("/") ? `${parent}${child}` : `${parent}/${child}`;
     },

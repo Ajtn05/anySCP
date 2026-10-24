@@ -25,6 +25,7 @@ import {
   Info,
   Link2,
   AlertTriangle,
+  Eye,
 } from "lucide-react";
 import { ModalShell, BTN_GHOST, BTN_DANGER } from "../shared/ModalShell";
 import type {
@@ -58,6 +59,7 @@ interface ExplorerFileTableProps {
   onSetClipboard: (clipboard: ExplorerClipboard | null) => void;
   onNavigate: (path: string) => void;
   onDownload: (entry: ExplorerEntry) => void;
+  onPreview?: (entry: ExplorerEntry, orderedEntries: ExplorerEntry[]) => void;
   /** Download a multi-entry selection at once (into a chosen folder). Absent
    *  for providers without a batch-download path. */
   onDownloadMany?: (entries: ExplorerEntry[]) => void;
@@ -343,6 +345,7 @@ export function ExplorerFileTable({
   onSetClipboard,
   onNavigate,
   onDownload,
+  onPreview,
   onDownloadMany,
   onDelete,
   onRename,
@@ -738,6 +741,14 @@ export function ExplorerFileTable({
     }
   };
 
+  const handlePreview = (entry: ExplorerEntry) => {
+    // A context-menu button disappears on close; restore focus to its row.
+    const row = Array.from(tableRef.current?.querySelectorAll<HTMLElement>("[data-entry-row]") ?? [])
+      .find((element) => element.dataset.entryName === entry.name);
+    row?.focus();
+    onPreview?.(entry, sortedEntries);
+  };
+
   const handleContextMenu = (
     e: React.MouseEvent,
     entry: ExplorerEntry | null,
@@ -855,6 +866,9 @@ export function ExplorerFileTable({
 
     // Single item context menu. Only offered when at least one editor is
     // configured (auto-seeded on first run, or added in Settings → Editors).
+    if (onPreview && provider.preview?.supports(entry)) {
+      items.push({ label: "Quick Look", icon: Eye, onClick: () => handlePreview(entry) });
+    }
     if (
       caps.canEditInEditor &&
       entry.entryType !== "Directory" &&
@@ -1201,6 +1215,12 @@ export function ExplorerFileTable({
                   }}
                   onKeyDown={(e) => {
                     const isInput = (e.target as Element).tagName === "INPUT";
+                    if (e.key === " " && e.target === e.currentTarget && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey &&
+                        onPreview && provider.preview?.supports(entry)) {
+                      e.preventDefault();
+                      handlePreview(entry);
+                      return;
+                    }
                     if (e.key === "Enter" && !isInput) handleDoubleClick(entry);
                     if (
                       (e.key === "ArrowDown" || e.key === "ArrowUp") &&

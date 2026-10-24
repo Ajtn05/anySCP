@@ -51,6 +51,28 @@ describe("ExplorerView — upload button", () => {
     seedSession();
   });
 
+  it("does not fetch previews during listing and cancels preview work when hidden", async () => {
+    const file = { name: "notes.txt", path: `${CURRENT_PATH}/notes.txt`, entry_type: "File", size: 8,
+      permissions: 0o644, permissions_display: "rw-r--r--", modified: null, is_symlink: false };
+    invoke.mockImplementation(async (command) => {
+      if (command === "sftp_list_dir") return [file];
+      if (command === "sftp_preview_begin") return "preview-request";
+      if (command === "sftp_preview_read") return new Promise(() => {});
+      return [];
+    });
+    const view = render(<ExplorerView sessionId={SESSION_ID} />);
+    const row = await screen.findByTestId("explorer-entry-notes.txt");
+    expect(invoke.mock.calls.some(([command]) => String(command).startsWith("sftp_preview"))).toBe(false);
+    fireEvent.keyDown(row, { key: " " });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("sftp_preview_read", { requestId: "preview-request" }));
+    expect(screen.getByRole("dialog")).toBeVisible();
+    view.rerender(<ExplorerView sessionId={SESSION_ID} isActive={false} />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("sftp_preview_cancel", { requestId: "preview-request" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(enqueueCall()).toBeUndefined();
+    expect(invoke.mock.calls.some(([command]) => command === "sftp_download" || command === "sftp_edit_external")).toBe(false);
+  });
+
   it("opens the native file picker and enqueues the selected files (issue #69)", async () => {
     dialogOpen.mockResolvedValue(["/local/a.txt", "/local/b.txt"]);
 

@@ -1,3 +1,5 @@
+import type { PreviewAdapter } from "./preview";
+
 // ─── Unified explorer types ──────────────────────────────────────────────────
 
 /** Normalized file entry that both SFTP and S3 entries convert into. */
@@ -72,6 +74,7 @@ export interface FileSystemProvider {
   readonly type: "sftp" | "s3";
   readonly sessionId: string;
   readonly capabilities: ProviderCapabilities;
+  readonly preview?: PreviewAdapter;
 
   /** Join a parent path with a child name. */
   joinPath(parent: string, child: string): string;
