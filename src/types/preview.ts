@@ -13,4 +13,9 @@ export interface PreviewData {
 export interface PreviewAdapter {
   supports(entry: ExplorerEntry): boolean;
   load(entry: ExplorerEntry, signal: AbortSignal): Promise<PreviewData>;
+  thumbnails?: {
+    supports(entry: ExplorerEntry): boolean;
+    load(entry: ExplorerEntry, signal: AbortSignal): Promise<ArrayBuffer>;
+    clear(): Promise<void>;
+  };
 }

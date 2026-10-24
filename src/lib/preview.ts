@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { PreviewAdapter, PreviewData, PreviewKind } from "../types/preview";
+import { thumbnailQueue } from "./thumbnail-queue";
+import type { ExplorerEntry } from "../types/explorer";
 
 const TEXT_EXTENSIONS = new Set([
   "txt", "md", "markdown", "log", "csv", "tsv", "json", "yaml", "yml", "toml",
@@ -31,24 +33,35 @@ export function decodePreview(buffer: ArrayBuffer): PreviewData {
 }
 
 export function createSftpPreviewAdapter(sessionId: string): PreviewAdapter {
+  async function read(entry: ExplorerEntry, signal: AbortSignal, thumbnail = false): Promise<ArrayBuffer> {
+    signal.throwIfAborted();
+    const requestId = await invoke<string>("sftp_preview_begin", {
+      sftpSessionId: sessionId, path: entry.id, ...(thumbnail ? { thumbnail: true } : {}),
+    });
+    const cancel = () => { void invoke("sftp_preview_cancel", { requestId }).catch(() => {}); };
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      signal.throwIfAborted();
+      const bytes = await invoke<ArrayBuffer>("sftp_preview_read", { requestId });
+      signal.throwIfAborted();
+      return bytes;
+    } finally {
+      signal.removeEventListener("abort", cancel); cancel();
+    }
+  }
   return {
     supports: (entry) => entry.entryType === "File" && previewKind(entry.name) !== null,
     async load(entry, signal) {
-      signal.throwIfAborted();
-      const requestId = await invoke<string>("sftp_preview_begin", {
-        sftpSessionId: sessionId, path: entry.id,
-      });
-      const cancel = () => { void invoke("sftp_preview_cancel", { requestId }).catch(() => {}); };
-      signal.addEventListener("abort", cancel, { once: true });
-      try {
-        signal.throwIfAborted();
-        const bytes = await invoke<ArrayBuffer>("sftp_preview_read", { requestId });
-        signal.throwIfAborted();
-        return decodePreview(bytes);
-      } finally {
-        signal.removeEventListener("abort", cancel);
-        cancel();
-      }
+      return decodePreview(await read(entry, signal));
+    },
+    thumbnails: {
+      supports: (entry) => entry.entryType === "File" && previewKind(entry.name) === "image" && entry.size <= 8 * 1024 * 1024,
+      load: (entry, signal) => thumbnailQueue.request(sessionId, JSON.stringify([sessionId, entry.id, entry.size, entry.modified]),
+        (signal) => read(entry, signal, true), signal, entry.modified !== null && !entry.isSymlink),
+      async clear() {
+        thumbnailQueue.clear(sessionId);
+        await invoke("sftp_thumbnail_clear", { sftpSessionId: sessionId });
+      },
     },
   };
 }

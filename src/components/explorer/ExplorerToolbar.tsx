@@ -9,6 +9,9 @@ import {
   Home,
   Loader2,
   Shield,
+  LayoutGrid,
+  List,
+  Eraser,
 } from "lucide-react";
 import type { FileSystemProvider } from "../../types/explorer";
 
@@ -35,6 +38,10 @@ interface ExplorerToolbarProps {
   sudoMode?: boolean;
   sudoBusy?: boolean;
   onToggleSudo?: () => void;
+  viewMode?: "list" | "grid";
+  onViewModeChange?: (mode: "list" | "grid") => void;
+  onClearThumbnails?: () => void;
+  thumbnailCacheBusy?: boolean;
 }
 
 // cache icons so they render once
@@ -97,6 +104,10 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
   sudoMode,
   sudoBusy,
   onToggleSudo,
+  viewMode = "list",
+  onViewModeChange,
+  onClearThumbnails,
+  thumbnailCacheBusy,
 }: ExplorerToolbarProps) {
   const caps = provider.capabilities;
   const providerType = provider.type;
@@ -253,6 +264,11 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
       <span className="w-px h-4 bg-border shrink-0" aria-hidden="true" />
 
       {/* Upload file */}
+      {provider.preview?.thumbnails && onViewModeChange && <div role="group" aria-label="File view" className="flex items-center gap-0.5 shrink-0">
+        <button className={ICON_BTN_CLASS} aria-label="List view" aria-pressed={viewMode === "list"} title="List view" onClick={() => onViewModeChange("list")}><List size={15} aria-hidden="true" /></button>
+        <button className={ICON_BTN_CLASS} aria-label="Thumbnail view" aria-pressed={viewMode === "grid"} title="Thumbnail view downloads visible JPEG/PNG images up to 8 MiB" onClick={() => onViewModeChange("grid")}><LayoutGrid size={15} aria-hidden="true" /></button>
+        {viewMode === "grid" && onClearThumbnails && <button className={ICON_BTN_CLASS} aria-label="Clear thumbnail cache" title="Clear thumbnail cache" aria-disabled={!!thumbnailCacheBusy} aria-busy={!!thumbnailCacheBusy} onClick={() => { if (!thumbnailCacheBusy) onClearThumbnails(); }}><Eraser size={15} aria-hidden="true" /></button>}
+      </div>}
       {caps.canUpload && (
         <button
           data-testid="explorer-upload"

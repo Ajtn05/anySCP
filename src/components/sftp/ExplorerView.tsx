@@ -14,6 +14,7 @@ import { conflictingNames } from "../../lib/drop-conflicts";
 import { toast } from "../../stores/toast-store";
 import type { EditorConfig } from "../../stores/settings-store";
 import { QuickLook } from "../explorer/QuickLook";
+import { useTransferStore } from "../../stores/transfer-store";
 
 interface ExplorerViewProps {
   /** The transport session id (sftp_session_id or scp_session_id). */
@@ -47,6 +48,22 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
   const provider = useMemo(() => createSftpProvider(sessionId, transport), [sessionId, transport]);
   const [preview, setPreview] = useState<{ entry: ExplorerEntry; entries: ExplorerEntry[] } | null>(null);
   const closePreview = useCallback(() => setPreview(null), []);
+  const [viewMode, setViewMode] = useState<"list" | "grid">("list");
+  const [thumbnailRevision, setThumbnailRevision] = useState(0);
+  const [clearingThumbnails, setClearingThumbnails] = useState(false);
+  const transferBusy = useTransferStore((state) => {
+    for (const transfer of state.transfers.values()) {
+      if (transfer.status === "Queued" || transfer.status === "InProgress") return true;
+    }
+    return false;
+  });
+  const clearThumbnails = useCallback(async () => {
+    setClearingThumbnails(true);
+    try { await provider.preview?.thumbnails?.clear(); }
+    catch { toast.error("The thumbnail cache could not be cleared."); }
+    finally { setThumbnailRevision((n) => n + 1); setClearingThumbnails(false); }
+  }, [provider]);
+  useEffect(() => () => { void provider.preview?.thumbnails?.clear().catch(() => {}); }, [provider]);
   useEffect(() => { setPreview(null); }, [sessionId, transport, session?.currentPath, isActive]);
 
   // ─── Drag-and-drop (OS → App) ─────────────────────────────────────────────
@@ -236,8 +253,14 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
             }, 300);
           }
         });
-
-        if (aborted) { unsub(); } else { unlisten = unsub; }
+        let edited = () => {};
+        if (transport === "sftp") {
+          try { edited = await listen<string>("sftp:file-edited", (event) => {
+            if (event.payload === sessionId) void loadDirectory(currentPathRef.current);
+          }); } catch { /* Keep upload refresh working if this listener is unavailable. */ }
+        }
+        const cleanup = () => { unsub(); edited(); };
+        if (aborted) { cleanup(); } else { unlisten = cleanup; }
       } catch {
         // Not in Tauri context
       }
@@ -252,13 +275,18 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
     async (path: string) => {
       setLoading(sessionId, true);
       try {
+        if (path === currentPathRef.current) {
+          setPreview(null);
+          await provider.preview?.thumbnails?.clear().catch(() => {});
+          setThumbnailRevision((n) => n + 1);
+        }
         const entries = await explorerInvoke<SftpEntry[]>(transport, "list_dir", sessionId, { path });
         setEntries(sessionId, path, entries);
       } catch (err: unknown) {
         setError(sessionId, errorMessage(err, "Failed to list directory"));
       }
     },
-    [sessionId, transport, setLoading, setEntries, setError],
+    [sessionId, transport, provider, setLoading, setEntries, setError],
   );
 
   // ─── Sudo toggle (SFTP only) ──────────────────────────────────────────────
@@ -786,6 +814,10 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
         sudoMode={sudoMode}
         sudoBusy={togglingSudo}
         onToggleSudo={transport === "sftp" && !isRoot ? () => void handleToggleSudo() : undefined}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+        onClearThumbnails={() => void clearThumbnails()}
+        thumbnailCacheBusy={clearingThumbnails}
       />
 
       {/* Error banner */}
@@ -801,6 +833,10 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
 
       <ExplorerFileTable
         provider={provider}
+        viewMode={viewMode}
+        thumbnailsActive={isActive && !preview}
+        thumbnailsPaused={transferBusy || clearingThumbnails || busy}
+        thumbnailRevision={thumbnailRevision}
         entries={explorerEntries}
         sortBy={session.sortBy}
         sortAsc={session.sortAsc}

@@ -75,4 +75,16 @@ describe("SFTP previews", () => {
     expect(previewKind("archive.zip")).toBeNull();
     expect(previewKind("movie.mov")).toBeNull();
   });
+
+  it("uses thumbnail requests with a separate source-size policy", async () => {
+    const adapter = createSftpPreviewAdapter("thumb-session").thumbnails!;
+    const image = { ...entry, name: "photo.jpg", size: 100, modified: 1 };
+    expect(adapter.supports(image)).toBe(true);
+    expect(adapter.supports({ ...image, size: 9 * 1024 * 1024 })).toBe(false);
+    expect(adapter.supports({ ...image, name: "file.pdf" })).toBe(false);
+    await adapter.load(image, new AbortController().signal);
+    expect(invoke).toHaveBeenCalledWith("sftp_preview_begin", { sftpSessionId: "thumb-session", path: entry.id, thumbnail: true });
+    await adapter.clear();
+    expect(invoke).toHaveBeenCalledWith("sftp_thumbnail_clear", { sftpSessionId: "thumb-session" });
+  });
 });

@@ -73,6 +73,16 @@ describe("ExplorerView — upload button", () => {
     expect(invoke.mock.calls.some(([command]) => command === "sftp_download" || command === "sftp_edit_external")).toBe(false);
   });
 
+  it("invalidates thumbnail caches on refresh without starting a download", async () => {
+    render(<ExplorerView sessionId={SESSION_ID} />);
+    await waitFor(() => expect(invoke.mock.calls.some(([command]) => command === "sftp_list_dir")).toBe(true));
+    invoke.mockClear();
+    fireEvent.click(screen.getByLabelText("Refresh"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("sftp_thumbnail_clear", { sftpSessionId: SESSION_ID }));
+    await waitFor(() => expect(invoke.mock.calls.some(([command]) => command === "sftp_list_dir")).toBe(true));
+    expect(invoke.mock.calls.some(([command]) => String(command).includes("download"))).toBe(false);
+  });
+
   it("opens the native file picker and enqueues the selected files (issue #69)", async () => {
     dialogOpen.mockResolvedValue(["/local/a.txt", "/local/b.txt"]);
 

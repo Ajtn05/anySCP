@@ -33,6 +33,9 @@ describe("SFTP Quick Look", () => {
         expect(await waitForSftpTransferResult(uploadId)).to.equal("Completed");
         await refreshExplorer(); await waitForEntry(name);
 
+        await (await $("[aria-label='Thumbnail view']")).click();
+        expect(await (await $("[aria-label='Directory contents']")).getAttribute("data-view-mode")).to.equal("grid");
+
         const row = await $(`[data-entry-name='${name}']`);
         await row.click(); await browser.keys([" "]);
         const dialog = await $("[data-testid='quick-look']");
@@ -48,6 +51,7 @@ describe("SFTP Quick Look", () => {
         expect(await dialog.isDisplayed()).to.equal(true);
         await browser.keys(["Escape"]);
         await dialog.waitForDisplayed({ reverse: true });
+        await (await $("[aria-label='List view']")).click();
         await deleteEntry(name);
     });
 });

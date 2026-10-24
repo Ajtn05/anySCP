@@ -43,6 +43,7 @@ import {
 } from "../../stores/settings-store";
 import { isEditableInEditor } from "../../lib/file-types";
 import { FilePropertiesDialog } from "./FilePropertiesDialog";
+import { Thumbnail } from "./Thumbnail";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -94,6 +95,10 @@ interface ExplorerFileTableProps {
   currentPath?: string;
   loading?: boolean;
   busy?: boolean;
+  viewMode?: "list" | "grid";
+  thumbnailsActive?: boolean;
+  thumbnailsPaused?: boolean;
+  thumbnailRevision?: number;
 }
 
 interface ContextMenuState {
@@ -364,7 +369,12 @@ export function ExplorerFileTable({
   onDragOut,
   currentPath,
   loading,
+  viewMode = "list",
+  thumbnailsActive = true,
+  thumbnailsPaused = false,
+  thumbnailRevision = 0,
 }: ExplorerFileTableProps) {
+  const grid = viewMode === "grid" && !!provider.preview?.thumbnails;
   const caps = provider.capabilities;
   const editors = useSettingsStore((s) => s.editors);
   const defaultEditorId = useSettingsStore((s) => s.defaultEditorId);
@@ -1077,7 +1087,7 @@ export function ExplorerFileTable({
 
         <button
           data-testid="explorer-sort-size"
-          className={`w-20 text-right ${thClass("size")}`}
+          className={`${grid ? "w-16" : "w-20"} text-right ${thClass("size")}`}
           onClick={() => handleSortClick("size")}
           aria-sort={
             sortBy === "size" ? (sortAsc ? "ascending" : "descending") : "none"
@@ -1088,7 +1098,7 @@ export function ExplorerFileTable({
 
         <button
           data-testid="explorer-sort-modified"
-          className={`w-44 text-center ${thClass("modified")}`}
+          className={`${grid ? "w-28" : "w-44"} text-center ${thClass("modified")}`}
           onClick={() => handleSortClick("modified")}
           aria-sort={
             sortBy === "modified"
@@ -1103,7 +1113,7 @@ export function ExplorerFileTable({
         </button>
 
         {/* Last column: Permissions for SFTP, Class for S3 */}
-        <span className="w-24 text-[length:var(--text-xs)] font-semibold uppercase tracking-wide text-text-muted select-none">
+        <span className={`${grid ? "hidden" : "w-24"} text-[length:var(--text-xs)] font-semibold uppercase tracking-wide text-text-muted select-none`}>
           {caps.hasPermissions
             ? "Permissions"
             : caps.hasStorageClass
@@ -1112,8 +1122,13 @@ export function ExplorerFileTable({
         </span>
       </div>
 
+      {grid && <p className="px-3 py-1.5 text-[length:var(--text-xs)] text-text-muted border-b border-border bg-bg-base">
+        {thumbnailsPaused ? "Thumbnail loading paused during transfers or file operations." : "Thumbnails download visible JPEG/PNG images up to 8 MiB. Use Quick Look for larger files."}
+      </p>}
+
       <div
         ref={tableRef}
+        data-explorer-scroll="true"
         // -scroll, not -auto: the header above reserves the scrollbar gutter,
         // so short listings would otherwise sit 6px left of their headers.
         className={`flex-1 overflow-y-scroll${dragGhost ? " select-none" : ""}`}
@@ -1189,6 +1204,9 @@ export function ExplorerFileTable({
           <div
             role="list"
             aria-label="Directory contents"
+            data-view-mode={grid ? "grid" : "list"}
+            className={grid ? "grid gap-2 p-3" : undefined}
+            style={grid ? { gridTemplateColumns: "repeat(auto-fill, minmax(min(144px, 100%), 1fr))" } : undefined}
             onContextMenu={(e) => {
               const target = e.target as Element;
               if (!target.closest("[data-entry-row]"))
@@ -1223,13 +1241,15 @@ export function ExplorerFileTable({
                     }
                     if (e.key === "Enter" && !isInput) handleDoubleClick(entry);
                     if (
-                      (e.key === "ArrowDown" || e.key === "ArrowUp") &&
+                      (e.key === "ArrowDown" || e.key === "ArrowUp" || (grid && (e.key === "ArrowLeft" || e.key === "ArrowRight"))) &&
                       !isInput
                     ) {
                       e.preventDefault();
                       const ids = sortedIds;
                       const currentIdx = ids.indexOf(entry.id);
-                      const direction = e.key === "ArrowDown" ? 1 : -1;
+                      const currentRow = e.currentTarget as HTMLElement;
+                      const columns = grid ? Math.max(1, getComputedStyle(currentRow.parentElement!).gridTemplateColumns.split(" ").filter(Boolean).length) : 1;
+                      const direction = e.key === "ArrowDown" ? columns : e.key === "ArrowUp" ? -columns : e.key === "ArrowRight" ? 1 : -1;
                       const nextIdx = Math.min(
                         Math.max(currentIdx + direction, 0),
                         ids.length - 1,
@@ -1251,12 +1271,11 @@ export function ExplorerFileTable({
                         lastClickedId.current = nextId;
                       }
 
-                      const currentRow = e.currentTarget as HTMLElement;
-                      const nextRow = (
+                      const nextRow = (grid ? tableRef.current?.querySelectorAll<HTMLElement>("[data-entry-row]")[nextIdx] : (
                         direction === 1
                           ? currentRow.nextElementSibling
                           : currentRow.previousElementSibling
-                      ) as HTMLElement | null;
+                      )) as HTMLElement | null;
                       nextRow?.focus();
                       nextRow?.scrollIntoView({ block: "nearest" });
                     }
@@ -1320,7 +1339,7 @@ export function ExplorerFileTable({
                       : undefined
                   }
                   className={[
-                    "flex items-center gap-2 px-3 py-2 cursor-default",
+                    grid ? "flex flex-col items-center gap-2 p-3 rounded-lg border border-border/50 min-w-0 cursor-default" : "flex items-center gap-2 px-3 py-2 cursor-default",
                     "transition-colors duration-[var(--duration-fast)]",
                     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                     "group",
@@ -1334,12 +1353,14 @@ export function ExplorerFileTable({
                   ].join(" ")}
                 >
                   {/* Icon */}
-                  <span className="w-5 flex items-center justify-center shrink-0">
+                  {grid ? <Thumbnail key={`${entry.id}:${thumbnailRevision}`} entry={entry} adapter={provider.preview!.thumbnails!}
+                    active={thumbnailsActive} paused={thumbnailsPaused || !!loading}
+                    fallback={<span className="[&>svg]:w-12 [&>svg]:h-12"><EntryIcon entry={entry} /></span>} /> : <span className="w-5 flex items-center justify-center shrink-0">
                     <EntryIcon entry={entry} />
-                  </span>
+                  </span>}
 
                   {/* Name — possibly in rename mode */}
-                  <span className="flex-1 min-w-0 text-[length:var(--text-sm)] text-text-primary truncate">
+                  <span title={entry.name} className={`${grid ? "w-full text-center line-clamp-2 break-words" : "flex-1 truncate"} min-w-0 text-[length:var(--text-sm)] text-text-primary`}>
                     {caps.canRename && renamingId === entry.id && onRename ? (
                       <RenameRow
                         entry={entry}
@@ -1352,7 +1373,7 @@ export function ExplorerFileTable({
                   </span>
 
                   {/* Size */}
-                  <span className="w-20 text-right text-[length:var(--text-xs)] text-text-muted shrink-0 font-mono tabular-nums whitespace-nowrap">
+                  <span className={`${grid ? "text-center" : "w-20 text-right"} text-[length:var(--text-xs)] text-text-muted shrink-0 font-mono tabular-nums whitespace-nowrap`}>
                     {entry.entryType === "Directory"
                       ? "—"
                       : formatBytes(entry.size)}
@@ -1363,7 +1384,7 @@ export function ExplorerFileTable({
                       12px because mono reads visually larger than the 14px sans.
                       Truncate + title as a safety net for wide locales (#109). */}
                   <span
-                    className="w-44 text-center text-[length:var(--text-xs)] text-text-muted shrink-0 font-mono tracking-tight truncate"
+                    className={`${grid ? "hidden" : "w-44"} text-center text-[length:var(--text-xs)] text-text-muted shrink-0 font-mono tracking-tight truncate`}
                     title={formatModified(entry.modified)}
                   >
                     {formatModified(entry.modified)}
@@ -1376,7 +1397,7 @@ export function ExplorerFileTable({
                         ? (entry.permissionsDisplay ?? "")
                         : undefined
                     }
-                    className="w-24 font-mono text-[length:var(--text-xs)] text-text-muted shrink-0 tracking-tight whitespace-nowrap"
+                    className={`${grid ? "hidden" : "w-24"} font-mono text-[length:var(--text-xs)] text-text-muted shrink-0 tracking-tight whitespace-nowrap`}
                   >
                     {caps.hasPermissions
                       ? (entry.permissionsDisplay ?? "")
