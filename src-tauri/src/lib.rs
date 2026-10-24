@@ -201,12 +201,14 @@ pub fn run() {
         })
         .manage(SshManager::new())
         .manage(sftp::preview::PreviewManager::new())
+        .manage(sftp::thumbnail_cache::ThumbnailCache::new())
         .invoke_handler(tauri::generate_handler![
             // SFTP — session & filesystem
             sftp::commands::sftp_open,
             sftp::preview::sftp_preview_begin,
             sftp::preview::sftp_preview_read,
             sftp::preview::sftp_preview_cancel,
+            sftp::preview::sftp_thumbnail_clear,
             sftp::commands::sftp_close,
             sftp::commands::sftp_list_dir,
             sftp::commands::sftp_home_dir,

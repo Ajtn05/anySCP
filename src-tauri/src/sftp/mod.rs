@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod preview;
+pub mod thumbnail_cache;
 pub mod transfer_manager;
 
 use dashmap::DashMap;
@@ -24,6 +25,8 @@ pub enum SftpError {
     LocalIoError(String),
     #[error("Transfer cancelled")]
     TransferCancelled,
+    #[error("Thumbnails are paused while another operation is active")]
+    PreviewDeferred,
     #[error("Invalid path: {0}")]
     InvalidPath(String),
     #[allow(dead_code)]
@@ -51,6 +54,7 @@ impl Serialize for SftpError {
             SftpError::RemoteIoError(_) => "remote_io_error",
             SftpError::LocalIoError(_) => "local_io_error",
             SftpError::TransferCancelled => "transfer_cancelled",
+            SftpError::PreviewDeferred => "preview_deferred",
             SftpError::InvalidPath(_) => "invalid_path",
             SftpError::PermissionDenied(_) => "permission_denied",
             SftpError::NotFound(_) => "not_found",
@@ -213,6 +217,10 @@ impl SftpManager {
 
     pub fn remove_transfer(&self, id: &str) {
         self.active_transfers.remove(id);
+    }
+
+    pub fn has_active_transfers(&self) -> bool {
+        !self.active_transfers.is_empty()
     }
 }
 

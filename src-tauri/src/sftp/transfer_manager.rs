@@ -483,6 +483,16 @@ impl TransferManager {
         Ok(())
     }
 
+    /// Background thumbnail reads yield to queued and active transfers.
+    pub fn has_active_transfers(&self) -> bool {
+        self.jobs.iter().any(|job| {
+            matches!(
+                job.status,
+                TransferStatus::Queued | TransferStatus::InProgress
+            )
+        })
+    }
+
     /// Snapshot of every known transfer job.
     pub fn list_all(&self) -> Vec<TransferInfo> {
         self.jobs.iter().map(|r| r.value().to_info()).collect()

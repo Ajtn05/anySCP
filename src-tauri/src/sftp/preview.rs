@@ -4,13 +4,17 @@ use std::{io::Cursor, sync::Arc, time::Duration};
 use dashmap::DashMap;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
 use serde::Serialize;
-use tauri::{State, Window};
+use tauri::{AppHandle, Manager, State, Window};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     sync::Semaphore,
 };
 use tokio_util::sync::CancellationToken;
 
+use super::{
+    thumbnail_cache::{CacheKey, ThumbnailCache},
+    transfer_manager::TransferManager,
+};
 use super::{SftpError, SftpManager};
 
 const SOURCE_LIMIT: u64 = 32 * 1024 * 1024;
@@ -18,6 +22,7 @@ const TEXT_LIMIT: u64 = 512 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PIXELS: u64 = 40_000_000;
 const MAX_DECODE_BYTES: u64 = 128 * 1024 * 1024;
+const THUMBNAIL_SOURCE_LIMIT: u64 = 8 * 1024 * 1024;
 
 struct Request {
     session_id: String,
@@ -25,6 +30,7 @@ struct Request {
     path: String,
     token: CancellationToken,
     started: bool,
+    thumbnail: bool,
 }
 
 pub struct PreviewManager {
@@ -44,6 +50,17 @@ impl PreviewManager {
     pub fn cancel_session(&self, session_id: &str) {
         self.requests.retain(|_, request| {
             if request.session_id == session_id {
+                request.token.cancel();
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    pub fn cancel_thumbnails(&self, session_id: &str) {
+        self.requests.retain(|_, request| {
+            if request.session_id == session_id && request.thumbnail {
                 request.token.cancel();
                 false
             } else {
@@ -92,6 +109,7 @@ fn error(message: impl Into<String>) -> SftpError {
 pub fn sftp_preview_begin(
     sftp_session_id: String,
     path: String,
+    thumbnail: Option<bool>,
     window: Window,
     manager: State<'_, PreviewManager>,
     sftp_manager: State<'_, Arc<SftpManager>>,
@@ -101,20 +119,25 @@ pub fn sftp_preview_begin(
         return Err(SftpError::InvalidPath(path));
     }
     kind(&path)?;
-    if manager.requests.len() >= 16 {
-        return Err(error(
-            "Too many previews are open. Close another preview and try again.",
-        ));
-    }
-    // One request per window/session. Replacing a selection cancels old I/O.
+    let thumbnail = thumbnail.unwrap_or(false);
+    // Foreground previews take priority over background requests. A thumbnail
+    // never cancels a foreground preview or a different thumbnail.
     manager.requests.retain(|_, request| {
-        if request.session_id == sftp_session_id && request.window == window.label() {
+        if request.session_id == sftp_session_id
+            && request.window == window.label()
+            && (!thumbnail || (request.thumbnail && request.path == path))
+        {
             request.token.cancel();
             false
         } else {
             true
         }
     });
+    if manager.requests.len() >= 16 {
+        return Err(error(
+            "Too many previews are open. Close another preview and try again.",
+        ));
+    }
     let id = uuid::Uuid::new_v4().to_string();
     manager.requests.insert(
         id.clone(),
@@ -124,9 +147,23 @@ pub fn sftp_preview_begin(
             window: window.label().into(),
             token: CancellationToken::new(),
             started: false,
+            thumbnail,
         },
     );
     Ok(id)
+}
+
+#[tauri::command]
+pub async fn sftp_thumbnail_clear(
+    sftp_session_id: String,
+    manager: State<'_, PreviewManager>,
+    cache: State<'_, ThumbnailCache>,
+    sftp_manager: State<'_, Arc<SftpManager>>,
+) -> Result<(), SftpError> {
+    sftp_manager.get_session(&sftp_session_id)?;
+    manager.cancel_thumbnails(&sftp_session_id);
+    cache.clear_session(&sftp_session_id).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -170,8 +207,11 @@ pub async fn sftp_preview_read(
     window: Window,
     manager: State<'_, PreviewManager>,
     sftp_manager: State<'_, Arc<SftpManager>>,
+    transfer_manager: State<'_, Arc<TransferManager>>,
+    cache: State<'_, ThumbnailCache>,
+    app: AppHandle,
 ) -> Result<tauri::ipc::Response, SftpError> {
-    let (session_id, path, token) = {
+    let (session_id, path, token, thumbnail) = {
         let mut request = manager
             .requests
             .get_mut(&request_id)
@@ -184,15 +224,57 @@ pub async fn sftp_preview_read(
             request.session_id.clone(),
             request.path.clone(),
             request.token.clone(),
+            request.thumbnail,
         )
     };
     let work = async {
-        let permit = tokio::select! {
-            _ = token.cancelled() => return Err(SftpError::TransferCancelled),
-            permit = manager.worker.clone().acquire_owned() => permit.map_err(|e| error(e.to_string()))?,
+        let busy =
+            || sftp_manager.has_active_transfers() || transfer_manager.has_active_transfers();
+        if thumbnail && busy() {
+            return Err(SftpError::PreviewDeferred);
+        }
+        if thumbnail
+            && manager
+                .requests
+                .iter()
+                .any(|request| !request.thumbnail && request.started)
+        {
+            return Err(SftpError::PreviewDeferred);
+        }
+        let permit = if thumbnail {
+            manager
+                .worker
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| SftpError::PreviewDeferred)?
+        } else {
+            let permit = tokio::select! {
+                _ = token.cancelled() => return Err(SftpError::TransferCancelled),
+                permit = manager.worker.clone().acquire_owned() => permit.map_err(|e| error(e.to_string()))?,
+            };
+            permit
         };
         let session = { sftp_manager.get_session(&session_id)?.sftp.clone() };
-        load_preview(session, &path, &token, permit).await
+        if thumbnail {
+            let base = app
+                .path()
+                .app_cache_dir()
+                .map_err(|e| error(e.to_string()))?
+                .join("thumbnails-v1");
+            load_thumbnail(
+                session,
+                &session_id,
+                &path,
+                &token,
+                permit,
+                &cache,
+                &base,
+                busy,
+            )
+            .await
+        } else {
+            load_preview(session, &path, &token, permit).await
+        }
     };
     let result = tokio::select! {
         _ = token.cancelled() => Err(SftpError::TransferCancelled),
@@ -201,6 +283,123 @@ pub async fn sftp_preview_read(
     };
     manager.requests.remove(&request_id);
     result.map(tauri::ipc::Response::new)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn load_thumbnail(
+    session: Arc<tokio::sync::Mutex<russh_sftp::client::SftpSession>>,
+    session_id: &str,
+    path: &str,
+    token: &CancellationToken,
+    permit: tokio::sync::OwnedSemaphorePermit,
+    cache: &ThumbnailCache,
+    base: &std::path::Path,
+    busy: impl Fn() -> bool,
+) -> Result<Vec<u8>, SftpError> {
+    if kind(path)? != Kind::Image {
+        return Err(error("Thumbnails are available for JPEG and PNG images"));
+    }
+    let generation = cache.generation(session_id).await;
+    let attrs = {
+        let sftp = session.lock().await;
+        sftp.metadata(path)
+            .await
+            .map_err(|e| error(e.to_string()))?
+    };
+    if attrs.file_type() != russh_sftp::protocol::FileType::File
+        || attrs.size.is_none_or(|size| size > THUMBNAIL_SOURCE_LIMIT)
+    {
+        return Err(error("Automatic thumbnails require a regular image up to 8 MiB. Use Quick Look to preview this file."));
+    }
+    let key = attrs.mtime.map(|modified| CacheKey {
+        session: session_id.into(),
+        path: path.into(),
+        size: attrs.size.unwrap_or(0),
+        modified,
+        generation,
+    });
+    if let Some(key) = &key {
+        if let Some(bytes) = cache.get(key).await {
+            return Ok(bytes);
+        }
+    }
+    if busy() {
+        return Err(SftpError::PreviewDeferred);
+    }
+    let mut file = {
+        session
+            .lock()
+            .await
+            .open(path)
+            .await
+            .map_err(|e| error(e.to_string()))?
+    };
+    let read = async {
+        let before = file.metadata().await.map_err(|e| error(e.to_string()))?;
+        if before.file_type() != russh_sftp::protocol::FileType::File
+            || before.size != attrs.size
+            || before.mtime != attrs.mtime
+        {
+            return Err(error("The image changed before loading"));
+        }
+        let bytes = read_thumbnail_source(&mut file, token, &busy).await?;
+        let after = file.metadata().await.map_err(|e| error(e.to_string()))?;
+        if before.size != after.size
+            || before.mtime != after.mtime
+            || bytes.len() as u64 != before.size.unwrap_or(0)
+        {
+            return Err(error("The image changed while loading"));
+        }
+        Ok(bytes)
+    }
+    .await;
+    let _ = file.shutdown().await;
+    let bytes = read?;
+    if busy() {
+        return Err(SftpError::PreviewDeferred);
+    }
+    let bytes = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        image_preview_at(&bytes, 320)
+    })
+    .await
+    .map_err(|e| error(e.to_string()))??;
+    if token.is_cancelled() {
+        return Err(SftpError::TransferCancelled);
+    }
+    if let Some(key) = key {
+        // A cache-write failure must not prevent displaying a valid thumbnail.
+        let _ = cache.put(base, key, &bytes).await;
+    }
+    Ok(bytes)
+}
+
+async fn read_thumbnail_source<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    token: &CancellationToken,
+    busy: &impl Fn() -> bool,
+) -> Result<Vec<u8>, SftpError> {
+    let mut bytes = Vec::new();
+    let mut chunk = [0; 32 * 1024];
+    loop {
+        if busy() {
+            return Err(SftpError::PreviewDeferred);
+        }
+        let want = chunk
+            .len()
+            .min((THUMBNAIL_SOURCE_LIMIT + 1) as usize - bytes.len());
+        let n = tokio::select! {
+            _ = token.cancelled() => return Err(SftpError::TransferCancelled),
+            result = reader.read(&mut chunk[..want]) => result.map_err(|e| error(e.to_string()))?,
+        };
+        if n == 0 {
+            return Ok(bytes);
+        }
+        bytes.extend_from_slice(&chunk[..n]);
+        if bytes.len() as u64 > THUMBNAIL_SOURCE_LIMIT {
+            return Err(error("The image exceeds the automatic thumbnail limit"));
+        }
+    }
 }
 
 async fn load_preview(
@@ -335,6 +534,10 @@ fn text(bytes: &[u8], truncated: bool) -> Result<String, SftpError> {
 }
 
 fn image_preview(bytes: &[u8]) -> Result<Vec<u8>, SftpError> {
+    image_preview_at(bytes, 2048)
+}
+
+fn image_preview_at(bytes: &[u8], edge: u32) -> Result<Vec<u8>, SftpError> {
     let format =
         image::guess_format(bytes).map_err(|_| error("This image could not be decoded"))?;
     if !matches!(format, ImageFormat::Jpeg | ImageFormat::Png) {
@@ -357,8 +560,8 @@ fn image_preview(bytes: &[u8]) -> Result<Vec<u8>, SftpError> {
     let orientation = decoder.orientation().map_err(|e| error(e.to_string()))?;
     let mut image = DynamicImage::from_decoder(decoder).map_err(|e| error(e.to_string()))?;
     image.apply_orientation(orientation);
-    if image.width() > 2048 || image.height() > 2048 {
-        image = image.thumbnail(2048, 2048);
+    if image.width() > edge || image.height() > edge {
+        image = image.thumbnail(edge, edge);
     }
     let mut output = Cursor::new(Vec::new());
     image
@@ -551,6 +754,119 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn thumbnails_reuse_disk_bytes_after_metadata_validation_and_clear_refetches() {
+        let mut encoded = Cursor::new(Vec::new());
+        DynamicImage::new_rgb8(800, 400)
+            .write_to(&mut encoded, ImageFormat::Png)
+            .unwrap();
+        let (session, _, opened) = test_session(encoded.into_inner(), None, 0o100644).await;
+        let directory = tempfile::tempdir().unwrap();
+        let cache = ThumbnailCache::new();
+        let token = CancellationToken::new();
+        let first = load_thumbnail(
+            session.clone(),
+            "s",
+            "/image.png",
+            &token,
+            permit().await,
+            &cache,
+            directory.path(),
+            || false,
+        )
+        .await
+        .unwrap();
+        let image = image::load_from_memory(&first).unwrap();
+        assert_eq!((image.width(), image.height()), (320, 160));
+        let second = load_thumbnail(
+            session.clone(),
+            "s",
+            "/image.png",
+            &token,
+            permit().await,
+            &cache,
+            directory.path(),
+            || false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(opened.load(Ordering::SeqCst), 1);
+        cache.clear_session("s").await;
+        load_thumbnail(
+            session,
+            "s",
+            "/image.png",
+            &token,
+            permit().await,
+            &cache,
+            directory.path(),
+            || false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(opened.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn automatic_thumbnail_budget_rejects_large_sources_before_open() {
+        let (session, _, opened) =
+            test_session(vec![], Some(THUMBNAIL_SOURCE_LIMIT + 1), 0o100644).await;
+        let directory = tempfile::tempdir().unwrap();
+        assert!(load_thumbnail(
+            session,
+            "s",
+            "/image.png",
+            &CancellationToken::new(),
+            permit().await,
+            &ThumbnailCache::new(),
+            directory.path(),
+            || false
+        )
+        .await
+        .is_err());
+        assert_eq!(opened.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn background_reads_yield_at_the_next_chunk_when_a_transfer_starts() {
+        let source = vec![1; 100_000];
+        let mut reader = source.as_slice();
+        let calls = AtomicUsize::new(0);
+        let result = read_thumbnail_source(&mut reader, &CancellationToken::new(), &|| {
+            calls.fetch_add(1, Ordering::SeqCst) >= 1
+        })
+        .await;
+        assert!(matches!(result, Err(SftpError::PreviewDeferred)));
+        assert_eq!(reader.len(), source.len() - 32 * 1024);
+    }
+
+    #[test]
+    fn invalidating_thumbnails_does_not_cancel_quick_look() {
+        let manager = PreviewManager::new();
+        let foreground = CancellationToken::new();
+        let background = CancellationToken::new();
+        for (id, thumbnail, token) in [
+            ("a", false, foreground.clone()),
+            ("b", true, background.clone()),
+        ] {
+            manager.requests.insert(
+                id.into(),
+                Request {
+                    session_id: "s".into(),
+                    window: "main".into(),
+                    path: "/image.png".into(),
+                    token,
+                    started: false,
+                    thumbnail,
+                },
+            );
+        }
+        manager.cancel_thumbnails("s");
+        assert!(!foreground.is_cancelled());
+        assert!(background.is_cancelled());
+    }
+
+    #[tokio::test]
     async fn reads_at_most_limit_plus_one_without_changing_source() {
         let source = b"abcdef";
         let mut reader = &source[..];
@@ -641,6 +957,7 @@ mod tests {
                     path: "/file.txt".into(),
                     token,
                     started: false,
+                    thumbnail: false,
                 },
             );
         }
