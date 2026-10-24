@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createSftpPreviewAdapter, decodePreview, previewKind } from "./preview";
+import { createSftpPreviewAdapter, decodePreview, isRawPreview, previewKind } from "./preview";
 import { createSftpProvider } from "../providers/sftp-provider";
 import { createS3Provider } from "../providers/s3-provider";
 import type { ExplorerEntry } from "../types/explorer";
@@ -86,5 +86,27 @@ describe("SFTP previews", () => {
     expect(invoke).toHaveBeenCalledWith("sftp_preview_begin", { sftpSessionId: "thumb-session", path: entry.id, thumbnail: true });
     await adapter.clear();
     expect(invoke).toHaveBeenCalledWith("sftp_thumbnail_clear", { sftpSessionId: "thumb-session" });
+  });
+
+  it("offers bounded embedded RAW previews without applying the full source-size limit", async () => {
+    const adapter = createSftpPreviewAdapter("raw-session");
+    for (const extension of ["DNG", "CR2", "NEF", "ARW"]) {
+      const raw = { ...entry, id: `/photo.${extension}`, name: `photo.${extension}`, size: 256 * 1024 * 1024, modified: 1 };
+      expect(previewKind(raw.name)).toBe("image");
+      expect(isRawPreview(raw.name)).toBe(true);
+      expect(adapter.supports(raw)).toBe(true);
+      expect(adapter.thumbnails!.supports(raw)).toBe(true);
+      expect(adapter.thumbnails!.supports({ ...raw, entryType: "Directory" })).toBe(false);
+    }
+    for (const name of ["photo.CR3", "photo.RAF", "photo.ORF", "photo.raw", "photo.tiff"]) {
+      expect(previewKind(name)).toBeNull();
+      expect(isRawPreview(name)).toBe(false);
+    }
+    expect(previewKind("DNG")).toBe("text");
+    expect(isRawPreview("DNG")).toBe(false);
+    const raw = { ...entry, id: "/photo.NEF", name: "photo.NEF", size: 256 * 1024 * 1024, modified: 1 };
+    await adapter.thumbnails!.load(raw, new AbortController().signal);
+    expect(invoke).toHaveBeenCalledWith("sftp_preview_begin", { sftpSessionId: "raw-session", path: raw.id, thumbnail: true });
+    await adapter.thumbnails!.clear();
   });
 });

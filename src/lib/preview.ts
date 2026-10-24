@@ -10,9 +10,14 @@ const TEXT_EXTENSIONS = new Set([
   "rb", "php", "sql", "env", "gitignore", "gitconfig", "properties", "service",
 ]);
 
+/** Classic TIFF containers with embedded JPEG support; camera variants vary. */
+export function isRawPreview(name: string): boolean {
+  return name.includes(".") && ["dng", "cr2", "nef", "arw"].includes(name.slice(name.lastIndexOf(".") + 1).toLowerCase());
+}
+
 export function previewKind(name: string): PreviewKind | null {
   const extension = name.slice(name.lastIndexOf(".") + 1).toLowerCase();
-  if (["jpg", "jpeg", "png"].includes(extension)) return "image";
+  if (["jpg", "jpeg", "png"].includes(extension) || isRawPreview(name)) return "image";
   if (extension === "pdf") return "pdf";
   if (!name.includes(".") || name.startsWith(".") || TEXT_EXTENSIONS.has(extension)) return "text";
   return null;
@@ -55,7 +60,7 @@ export function createSftpPreviewAdapter(sessionId: string): PreviewAdapter {
       return decodePreview(await read(entry, signal));
     },
     thumbnails: {
-      supports: (entry) => entry.entryType === "File" && previewKind(entry.name) === "image" && entry.size <= 8 * 1024 * 1024,
+      supports: (entry) => entry.entryType === "File" && previewKind(entry.name) === "image" && (isRawPreview(entry.name) || entry.size <= 8 * 1024 * 1024),
       load: (entry, signal) => thumbnailQueue.request(sessionId, JSON.stringify([sessionId, entry.id, entry.size, entry.modified]),
         (signal) => read(entry, signal, true), signal, entry.modified !== null && !entry.isSymlink),
       async clear() {

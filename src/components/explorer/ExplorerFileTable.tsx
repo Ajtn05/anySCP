@@ -1123,7 +1123,7 @@ export function ExplorerFileTable({
       </div>
 
       {grid && <p className="px-3 py-1.5 text-[length:var(--text-xs)] text-text-muted border-b border-border bg-bg-base">
-        {thumbnailsPaused ? "Thumbnail loading paused during transfers or file operations." : "Thumbnails download visible JPEG/PNG images up to 8 MiB. Use Quick Look for larger files."}
+        {thumbnailsPaused ? "Thumbnail loading paused during transfers or file operations." : "Visible JPEG/PNG files and embedded RAW JPEGs use up to 8 MiB each, plus RAW metadata. Use Quick Look for larger previews."}
       </p>}
 
       <div

@@ -266,7 +266,7 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
       {/* Upload file */}
       {provider.preview?.thumbnails && onViewModeChange && <div role="group" aria-label="File view" className="flex items-center gap-0.5 shrink-0">
         <button className={ICON_BTN_CLASS} aria-label="List view" aria-pressed={viewMode === "list"} title="List view" onClick={() => onViewModeChange("list")}><List size={15} aria-hidden="true" /></button>
-        <button className={ICON_BTN_CLASS} aria-label="Thumbnail view" aria-pressed={viewMode === "grid"} title="Thumbnail view downloads visible JPEG/PNG images up to 8 MiB" onClick={() => onViewModeChange("grid")}><LayoutGrid size={15} aria-hidden="true" /></button>
+        <button className={ICON_BTN_CLASS} aria-label="Thumbnail view" aria-pressed={viewMode === "grid"} title="Thumbnails: JPEG/PNG files and embedded DNG/CR2/NEF/ARW JPEGs up to 8 MiB, plus RAW metadata" onClick={() => onViewModeChange("grid")}><LayoutGrid size={15} aria-hidden="true" /></button>
         {viewMode === "grid" && onClearThumbnails && <button className={ICON_BTN_CLASS} aria-label="Clear thumbnail cache" title="Clear thumbnail cache" aria-disabled={!!thumbnailCacheBusy} aria-busy={!!thumbnailCacheBusy} onClick={() => { if (!thumbnailCacheBusy) onClearThumbnails(); }}><Eraser size={15} aria-hidden="true" /></button>}
       </div>}
       {caps.canUpload && (

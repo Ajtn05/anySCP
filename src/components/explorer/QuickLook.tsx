@@ -4,6 +4,7 @@ import type { ExplorerEntry } from "../../types/explorer";
 import type { PreviewAdapter, PreviewData } from "../../types/preview";
 import { formatBytes } from "../../utils/format";
 import { ModalBackdrop } from "../shared/ModalBackdrop";
+import { isRawPreview } from "../../lib/preview";
 
 interface QuickLookProps {
   adapter: PreviewAdapter;
@@ -79,7 +80,7 @@ export function QuickLook({ adapter, entry, entries, onChange, onClose, onDownlo
         <div className="flex items-center gap-2 px-3 sm:px-5 py-3 border-b border-border shrink-0">
           <div className="flex-1 min-w-0">
             <h2 id={titleId} className="truncate font-medium text-text-primary">{entry.name}</h2>
-            <p className="text-xs text-text-muted">{formatBytes(data?.sourceSize ?? entry.size)} · Quick Look</p>
+            <p className="text-xs text-text-muted">{formatBytes(data?.sourceSize ?? entry.size)} · {isRawPreview(entry.name) ? "Embedded JPEG · " : ""}Quick Look</p>
           </div>
           <button className={BUTTON} aria-label="Previous file" disabled={index <= 0} onClick={() => onChange(entries[index - 1])}><ChevronLeft size={18} /></button>
           <button className={BUTTON} aria-label="Next file" disabled={index < 0 || index >= entries.length - 1} onClick={() => onChange(entries[index + 1])}><ChevronRight size={18} /></button>

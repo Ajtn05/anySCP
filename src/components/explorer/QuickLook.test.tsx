@@ -71,4 +71,22 @@ describe("Quick Look", () => {
     expect(p.onClose).toHaveBeenCalledOnce();
     await act(async () => {});
   });
+
+  it("labels the embedded RAW JPEG and downloads the original entry", async () => {
+    const createObjectURL = vi.fn(() => "blob:raw-preview");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
+    try {
+      const raw = { ...first, id: "/photo.NEF", name: "photo.NEF", size: 50 * 1024 * 1024 };
+      const p = props({ supports: () => true, load: async () => ({ kind: "image", sourceSize: raw.size, truncated: false, bytes: new ArrayBuffer(4) }) });
+      const view = render(<QuickLook {...p} entry={raw} entries={[raw]} />);
+      expect(screen.getByText(/Embedded JPEG · Quick Look/)).toHaveTextContent("50.0 MB");
+      expect(await screen.findByRole("img", { name: raw.name })).toHaveAttribute("src", "blob:raw-preview");
+      fireEvent.click(screen.getByLabelText("Download file"));
+      expect(p.onDownload).toHaveBeenCalledWith(raw);
+      expect(createObjectURL).toHaveBeenCalledOnce();
+      view.unmount();
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:raw-preview");
+    } finally { vi.unstubAllGlobals(); }
+  });
 });
