@@ -71,6 +71,14 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("anyscp-video", |context, request, responder| {
+            sftp::video_preview::register(context.app_handle().clone(), context.webview_label().into(), request, responder);
+        })
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                window.state::<sftp::video_preview::VideoManager>().cancel_window(window.label());
+            }
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -202,6 +210,7 @@ pub fn run() {
         .manage(SshManager::new())
         .manage(sftp::preview::PreviewManager::new())
         .manage(sftp::thumbnail_cache::ThumbnailCache::new())
+        .manage(sftp::video_preview::VideoManager::new())
         .invoke_handler(tauri::generate_handler![
             // SFTP — session & filesystem
             sftp::commands::sftp_open,
@@ -209,6 +218,12 @@ pub fn run() {
             sftp::preview::sftp_preview_read,
             sftp::preview::sftp_preview_cancel,
             sftp::preview::sftp_thumbnail_clear,
+            sftp::video_preview::sftp_video_begin,
+            sftp::video_preview::sftp_video_open,
+            sftp::video_preview::sftp_video_cancel,
+            sftp::video_preview::sftp_video_deferred,
+            sftp::video_preview::sftp_video_poster_cached,
+            sftp::video_preview::sftp_video_poster_store,
             sftp::commands::sftp_close,
             sftp::commands::sftp_list_dir,
             sftp::commands::sftp_home_dir,

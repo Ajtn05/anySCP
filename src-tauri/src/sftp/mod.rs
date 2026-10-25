@@ -3,6 +3,7 @@ pub mod preview;
 mod raw_preview;
 pub mod thumbnail_cache;
 pub mod transfer_manager;
+pub mod video_preview;
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};

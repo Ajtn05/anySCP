@@ -41,6 +41,14 @@ pub struct PreviewManager {
 }
 
 impl PreviewManager {
+    pub(super) fn worker(&self) -> Arc<Semaphore> {
+        self.worker.clone()
+    }
+    pub(super) fn has_foreground(&self) -> bool {
+        self.requests
+            .iter()
+            .any(|request| !request.thumbnail && request.started)
+    }
     pub fn new() -> Self {
         Self {
             requests: DashMap::new(),
@@ -159,10 +167,12 @@ pub async fn sftp_thumbnail_clear(
     sftp_session_id: String,
     manager: State<'_, PreviewManager>,
     cache: State<'_, ThumbnailCache>,
+    videos: State<'_, super::video_preview::VideoManager>,
     sftp_manager: State<'_, Arc<SftpManager>>,
 ) -> Result<(), SftpError> {
     sftp_manager.get_session(&sftp_session_id)?;
     manager.cancel_thumbnails(&sftp_session_id);
+    videos.cancel_thumbnails(&sftp_session_id);
     cache.clear_session(&sftp_session_id).await;
     Ok(())
 }
@@ -212,6 +222,7 @@ pub async fn sftp_preview_read(
     cache: State<'_, ThumbnailCache>,
     app: AppHandle,
 ) -> Result<tauri::ipc::Response, SftpError> {
+    let videos = app.state::<super::video_preview::VideoManager>();
     let (session_id, path, token, thumbnail) = {
         let mut request = manager
             .requests
@@ -231,7 +242,7 @@ pub async fn sftp_preview_read(
     let work = async {
         let busy =
             || sftp_manager.has_active_transfers() || transfer_manager.has_active_transfers();
-        if thumbnail && busy() {
+        if thumbnail && (busy() || videos.has_foreground()) {
             return Err(SftpError::PreviewDeferred);
         }
         if thumbnail
@@ -602,7 +613,7 @@ fn image_preview_oriented(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use russh_sftp::protocol::{
         Attrs, Data, FileAttributes, Handle, OpenFlags, Status, StatusCode,
@@ -692,7 +703,7 @@ mod tests {
         }
     }
 
-    type TestConnection = (
+    pub(in crate::sftp) type TestConnection = (
         Arc<tokio::sync::Mutex<russh_sftp::client::SftpSession>>,
         Arc<AtomicUsize>,
         Arc<AtomicUsize>,
@@ -704,7 +715,7 @@ mod tests {
             .0
     }
 
-    async fn test_session_counted(
+    pub(in crate::sftp) async fn test_session_counted(
         bytes: Vec<u8>,
         reported_size: Option<u64>,
         mode: u32,
