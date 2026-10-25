@@ -51,7 +51,7 @@ describe("video Quick Look", () => {
     fireEvent.click(screen.getByRole("button", { name: "Load video" }));
     const media = await screen.findByLabelText(`Video preview: ${entry.name}`);
     fireEvent.error(media);
-    expect(await screen.findByRole("alert")).toHaveTextContent("codec or container");
+    expect(await screen.findByRole("alert")).toHaveTextContent("This video can't be played here. Download the file to open it.");
     expect(source.release).toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Try video again" })).toBeEnabled();
   });

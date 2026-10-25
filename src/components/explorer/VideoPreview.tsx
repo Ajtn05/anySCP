@@ -24,7 +24,7 @@ export function VideoPreview({ adapter, entry, busy }: {
     setError(null); setSource(null);
     const probe = document.createElement("video");
     if (!probe.canPlayType(videoMime(entry.name) ?? "")) {
-      setError("This webview does not support this video format. Download the file to open it."); setRequested(false);
+      setError("This video can't be played here. Download the file to open it."); setRequested(false);
       return;
     }
     void adapter.open(entry, controller.signal).then((result) => {
@@ -51,7 +51,7 @@ export function VideoPreview({ adapter, entry, busy }: {
     if (!failedSource) return;
     const deferred = await failedSource.deferred().catch(() => false);
     if (current.current !== failedSource) return;
-    setError(deferred ? "Video loading paused for a transfer. Try again when it finishes." : "The webview could not play this video. Its codec or container may be unsupported. Download the file to open it.");
+    setError(deferred ? "Video loading paused for a transfer. Try again when it finishes." : "This video can't be played here. Download the file to open it.");
     setSource(null); setRequested(false);
   };
   return <div ref={region} tabIndex={-1} className="flex flex-col items-center justify-center h-full min-h-0 gap-4 p-4 sm:p-6 outline-none">
@@ -66,13 +66,12 @@ export function VideoPreview({ adapter, entry, busy }: {
       }} /> : <div className="flex flex-col items-center max-w-md gap-4 text-center">
       <Film size={40} className="text-text-muted" aria-hidden="true" />
       {error && <p role="alert" className="text-sm text-text-secondary">{error}</p>}
-      <p className="text-sm text-text-muted">{busy ? "Video loading is paused during transfers." : "Load a remote preview, then use the video controls to play. Playback uses your system’s supported codecs."}</p>
+      <p className="text-sm text-text-muted">{busy ? "Video loading is paused during transfers." : "Load this video to preview it."}</p>
       <button className="inline-flex items-center gap-2 px-4 py-2 text-sm rounded-md border border-border bg-bg-surface text-text-primary hover:bg-bg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
         disabled={busy || requested} onClick={() => { region.current?.focus(); setRequested(true); }}>
         {requested && <Loader2 size={16} className="motion-safe:animate-spin" aria-hidden="true" />}
         {requested ? "Loading video…" : position.current > 0 ? "Resume video" : error ? "Try video again" : "Load video"}
       </button>
     </div>}
-    {source && !busy && <p className="text-xs text-text-muted text-center">Streams from the server. Seeking may need more data. Transfers pause video loading.</p>}
   </div>;
 }

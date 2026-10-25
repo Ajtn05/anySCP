@@ -117,7 +117,7 @@ impl VideoManager {
         }
         if mime(&path).is_none() {
             return Err(error(
-                "This video container is not supported. Download the file to open it.",
+                "This video can't be played here. Download the file to open it.",
             ));
         }
         let mut leases = self.leases.lock().unwrap();
@@ -318,7 +318,7 @@ async fn inspect(
         };
         if !valid {
             return Err(error(
-                "This video container is not supported. Download the file to open it.",
+                "This video can't be played here. Download the file to open it.",
             ));
         }
         let after = file.metadata().await.map_err(|e| error(e.to_string()))?;

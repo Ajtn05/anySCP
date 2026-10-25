@@ -4,7 +4,6 @@ import type { ExplorerEntry } from "../../types/explorer";
 import type { PreviewAdapter, PreviewData } from "../../types/preview";
 import { formatBytes } from "../../utils/format";
 import { ModalBackdrop } from "../shared/ModalBackdrop";
-import { isRawPreview } from "../../lib/preview";
 import { videoMime } from "../../lib/video-preview";
 import { VideoPreview } from "./VideoPreview";
 
@@ -85,7 +84,7 @@ export function QuickLook({ adapter, entry, entries, onChange, onClose, onDownlo
         <div className="flex items-center gap-2 px-3 sm:px-5 py-3 border-b border-border shrink-0">
           <div className="flex-1 min-w-0">
             <h2 id={titleId} className="truncate font-medium text-text-primary">{entry.name}</h2>
-            <p className="text-xs text-text-muted">{formatBytes(data?.sourceSize ?? entry.size)} · {isRawPreview(entry.name) ? "Embedded JPEG · " : ""}Quick Look</p>
+            <p className="text-xs text-text-muted">{formatBytes(data?.sourceSize ?? entry.size)} · Quick Look</p>
           </div>
           <button className={BUTTON} aria-label="Previous file" disabled={index <= 0} onClick={() => onChange(entries[index - 1])}><ChevronLeft size={18} /></button>
           <button className={BUTTON} aria-label="Next file" disabled={index < 0 || index >= entries.length - 1} onClick={() => onChange(entries[index + 1])}><ChevronRight size={18} /></button>
@@ -113,7 +112,7 @@ function PreviewContent({ data, name }: { data: PreviewData; name: string }) {
   if (data.kind === "image") return url ? <div className="flex items-center justify-center h-full p-4"><img src={url} alt={name} className="max-w-full max-h-full object-contain" /></div> : null;
   if (data.kind === "pdf") return <Suspense fallback={<p role="status" className="p-8 text-sm text-text-muted">Loading PDF viewer…</p>}><PdfPreview bytes={data.bytes} /></Suspense>;
   return <>
-    {data.truncated && <p role="status" className="sticky top-0 px-5 py-2 bg-bg-surface border-b border-border text-xs text-text-muted">Showing the first 512 KiB. Download the file for the full content.</p>}
+    {data.truncated && <p role="status" className="sticky top-0 px-5 py-2 bg-bg-surface border-b border-border text-xs text-text-muted">Showing part of this file. Download it to read the full content.</p>}
     <pre tabIndex={0} aria-label="File contents" className="p-5 text-sm font-mono whitespace-pre-wrap break-words text-text-primary outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">{new TextDecoder().decode(data.bytes)}</pre>
   </>;
 }

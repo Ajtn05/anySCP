@@ -1122,8 +1122,8 @@ export function ExplorerFileTable({
         </span>
       </div>
 
-      {grid && <p className="px-3 py-1.5 text-[length:var(--text-xs)] text-text-muted border-b border-border bg-bg-base">
-        {thumbnailsPaused ? "Thumbnail loading paused during transfers or file operations." : "Visible image and video thumbnails use up to 8 MiB each, plus RAW metadata. Video posters depend on your system’s codecs."}
+      {grid && thumbnailsPaused && <p role="status" className="px-3 py-1.5 text-[length:var(--text-xs)] text-text-muted border-b border-border bg-bg-base">
+        Thumbnail loading is paused.
       </p>}
 
       <div

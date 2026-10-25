@@ -466,7 +466,7 @@ async fn load_preview(
         };
         if file_kind != Kind::Text && !raw && size > limit {
             return Err(error(
-                "This file exceeds the 32 MiB preview limit. Download it to open it.",
+                "This file is too large to preview. Download it to open it.",
             ));
         }
         let (bytes, orientation) = if raw {

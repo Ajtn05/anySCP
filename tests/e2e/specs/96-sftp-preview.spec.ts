@@ -99,7 +99,7 @@ describe("SFTP Quick Look", () => {
         await row.click(); await browser.keys([" "]);
         const dialog = await $("[data-testid='quick-look']");
         await dialog.waitForDisplayed();
-        expect(await dialog.getText()).to.include("Embedded JPEG");
+        expect(await dialog.getText()).to.include(name);
         await browser.waitUntil(async () => await browser.execute(() => {
             const image = document.querySelector<HTMLImageElement>("[data-testid='quick-look'] img");
             return image?.complete === true && image.naturalWidth === 4 && image.naturalHeight === 2;

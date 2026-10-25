@@ -27,7 +27,7 @@ pub(super) struct EmbeddedJpeg {
 
 fn invalid() -> SftpError {
     SftpError::ProtocolError(
-        "This RAW file has no supported embedded JPEG within the preview limits. Download it to open it.".into(),
+        "A preview is not available for this photo. Download it to open it.".into(),
     )
 }
 
