@@ -10,6 +10,8 @@ Supported formats:
 - JPEG and PNG: orientation-aware previews fitted within 2048 × 2048 pixels.
 - DNG, CR2, NEF, and ARW: embedded JPEG previews in supported classic TIFF
   layouts, using the same image size and decoding limits. Camera variants differ.
+- MP4, M4V, modern MOV, and WebM: explicit video loading and native playback
+  controls, with bounded posters in the grid. Codec support varies.
 - Text: UTF-8 and BOM-marked UTF-16, with a 512 KiB source prefix limit.
   HTML/SVG are shown as source text. Binary content is rejected.
 - PDF: one page at a time in a locally bundled PDF.js worker, including password
@@ -39,8 +41,8 @@ cache for original files.
 
 Use the **Thumbnail view** toolbar button for a grid. List view remains the
 default; selection, sorting, rename, menus, uploads, and drag actions are shared
-between both views. JPEG/PNG sources up to 8 MiB and supported embedded RAW
-JPEGs up to 8 MiB get automatic thumbnails;
+between both views. JPEG/PNG sources up to 8 MiB, supported embedded RAW JPEGs
+up to 8 MiB, and bounded video posters get automatic thumbnails;
 other files retain icons and their existing Quick Look/Download actions. Grid
 thumbnails fit within 320 × 320 pixels without enlarging small images.
 
@@ -144,9 +146,88 @@ the in-memory SFTP protocol server, excluding SFTP/SSH framing:
 The Nikon's smaller maker-note JPEG is intentionally not followed. These are
 compatibility and byte-budget checks, not real-network latency benchmarks.
 
-Next increments from the approved plan: more RAW container/camera fixtures,
-then video posters and range-backed playback with explicit codec/platform tests.
+## Video previews and posters
 
-Large PDF range loading, native-webview compatibility, low-bandwidth transfer
-benchmarks, PDF first-page thumbnails, and color-management fidelity require further validation. The
+Select a supported video and open Quick Look. **Load video** creates a scoped
+stream; native controls then start playback. There is no autoplay. Transfer
+activity releases the media source and cancels its lease. Afterward, **Resume
+video** reloads the stream at the saved position; playback still waits for the
+native Play control. Closing the dialog, changing files, hiding the explorer,
+closing its window, or closing the SFTP session cancels its video work.
+
+The optional provider video adapter uses separate begin/open/cancel commands.
+A Tauri asynchronous `anyscp-video` protocol serves opaque UUID URLs, validated
+against the requesting webview and its SFTP session. Remote filenames and
+credentials do not appear in URLs. Each source must be a regular file with a
+known size. The reader checks target metadata, opens read-only, releases the
+session mutex before reading, and compares size/mtime before and after each
+range. It never creates a local movie, transfer job, editor watcher, or network
+listener. S3 and SCP do not expose this adapter.
+
+Single inclusive/open-ended/suffix byte ranges return `206`, `Content-Range`,
+`Accept-Ranges`, and `no-store`; invalid/multiple ranges return `416`. Each
+response is capped at 1 MiB. A no-Range GET can return `200` only when the whole
+file fits that limit; larger no-Range GETs fail instead of downloading a movie.
+HEAD returns metadata without file bytes. Ranges share the existing single
+preview worker, and at most four protocol requests are admitted at once.
+The service allows at most eight leases and expires them after two minutes
+without requests. Each I/O request has a 15-second timeout. Background reads
+check transfer state between packets up to 32 KiB; foreground playback uses up
+to 256 KiB to reduce network round trips. The SFTP library's server limits can
+reduce those packet sizes. Active SFTP transfers defer range reads in Rust;
+the explorer also pauses video for queued/active transfers of any provider.
+
+Grid posters use the existing visible-only queue and memory LRU. A muted,
+detached video element decodes a frame after a short seek (up to 100 ms).
+Waiting for seek completion and two paint frames avoids WebKit's early
+`loadeddata` event producing an empty canvas. Extraction never calls Play.
+Every poster lease has an 8 MiB **total** file-read budget, including the
+container signature and all seeks/repeated ranges, plus a 15-second wait for
+the decoded frame. Only one poster is decoded by the queue at a time. The canvas fits
+within 320 × 320 without enlargement. Rust validates and re-encodes the binary
+PNG before putting it in the existing private session cache; arbitrary payloads
+and original videos cannot enter that cache. Refresh and Clear thumbnail cache
+cancel poster leases and invalidate their cache generation. Media sources,
+event listeners, timers, paint callbacks, and leases are released on all exits.
+
+The webview, rather than a bundled transcoder, supplies codecs. MIME checks are
+only a preflight hint. Unsupported codecs, malformed files, poster read-budget
+failures, and older MOV files without an initial `ftyp` box retain an icon and
+Download fallback. Video metadata dimensions above 8192 per edge or 40 million
+pixels are rejected in the frontend; native decoder memory behavior still
+depends on the platform. No FFmpeg or other system executable is required at
+runtime. Playback can eventually read an entire movie after explicit Play;
+the response cap limits each request, not total foreground bandwidth. High
+latency, high-bitrate, inter-frame dependencies, and large/non-fast-start
+metadata can delay playback or prevent a poster within its budget.
+
+The protocol approach follows [Tauri's streaming example](https://github.com/tauri-apps/tauri/blob/dev/examples/streaming/main.rs),
+with remote reads, scope checks, cancellation, and stricter bounds. Media
+format preflight uses the standard [canPlayType API](https://developer.mozilla.org/en-US/docs/Web/API/HTMLMediaElement/canPlayType).
+
+### Video validation
+
+Rust tests cover range syntax/limits/overflow, window ownership, lease bounds
+and expiry, read-only protocol opens, concurrent independent ranges beside an
+unchanged original download, total poster budgets, transfer deferral,
+cancellation, file changes, special files, PNG normalization, and HTTP headers.
+Frontend tests cover explicit loading, original downloads, codec errors,
+transfer pause/resume, stale results, poster seek timing, bounded canvases,
+cache hits, binary IPC, timeouts, and resource cleanup. The Docker E2E spec
+adds a malformed-video fallback followed by a byte-identical queued download.
+
+An isolated macOS Tauri harness used generated H.264 MP4 and VP9 WebM files
+through an in-memory SFTP server and the actual custom protocol. Native checks
+confirmed metadata-only loading without autoplay, playback, MP4 metadata at
+the file's end, seeking to six seconds, source release during a simulated
+transfer, explicit resumption at that position, and a drawable PNG poster.
+The generated 6.5 MiB MP4 produced a roughly 20 KiB poster. Visual checks used
+380, 720, and 1050-pixel panel fixtures. The temporary harness and videos are
+not part of the shipped application. Windows/WebView2, Linux/WebKitGTK,
+M4V/MOV variants, audio codecs, and real-network benchmarks remain validation
+gates; this is not a claim of universal container/codec support.
+
+Large PDF range loading, more RAW camera fixtures, cross-platform native media
+compatibility, low-bandwidth transfer benchmarks, PDF first-page thumbnails,
+and color-management fidelity require further validation. The
 current file size/mtime checks are best-effort validators, not content hashes.

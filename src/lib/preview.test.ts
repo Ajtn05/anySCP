@@ -5,7 +5,7 @@ import { createS3Provider } from "../providers/s3-provider";
 import type { ExplorerEntry } from "../types/explorer";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke, convertFileSrc: (id: string, scheme: string) => `${scheme}://localhost/${id}` }));
 const entry = { id: "/notes.txt", name: "notes.txt", entryType: "File" } as ExplorerEntry;
 
 function packet(kind = "text") {
@@ -73,7 +73,7 @@ describe("SFTP previews", () => {
     expect(previewKind(".env.local")).toBe("text");
     expect(previewKind("Dockerfile")).toBe("text");
     expect(previewKind("archive.zip")).toBeNull();
-    expect(previewKind("movie.mov")).toBeNull();
+    expect(previewKind("movie.mov")).toBe("video");
   });
 
   it("uses thumbnail requests with a separate source-size policy", async () => {
@@ -108,5 +108,19 @@ describe("SFTP previews", () => {
     await adapter.thumbnails!.load(raw, new AbortController().signal);
     expect(invoke).toHaveBeenCalledWith("sftp_preview_begin", { sftpSessionId: "raw-session", path: raw.id, thumbnail: true });
     await adapter.thumbnails!.clear();
+  });
+
+  it("offers videos through an explicit stream adapter without full-file reads", async () => {
+    const adapter = createSftpPreviewAdapter("video-session");
+    for (const name of ["movie.MP4", "movie.mov", "movie.m4v", "movie.webm"]) {
+      const movie = { ...entry, name, size: 10 * 1024 ** 3 };
+      expect(adapter.supports(movie)).toBe(true);
+      expect(adapter.thumbnails!.supports(movie)).toBe(true);
+      expect(previewKind(name)).toBe("video");
+    }
+    expect(adapter.video).toBeDefined();
+    await expect(adapter.load({ ...entry, name: "movie.mp4" }, new AbortController().signal)).rejects.toThrow("video preview controls");
+    expect(invoke).not.toHaveBeenCalled();
+    expect(previewKind("movie.mkv")).toBeNull();
   });
 });

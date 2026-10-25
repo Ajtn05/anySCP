@@ -870,6 +870,7 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
 
       {preview && isActive && provider.preview && (
         <QuickLook adapter={provider.preview} entry={preview.entry} entries={preview.entries}
+          transfersBusy={transferBusy}
           onChange={(entry) => setPreview((current) => current ? { ...current, entry } : null)}
           onClose={closePreview} onDownload={(entry) => void handleDownload(entry)} />
       )}

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { PreviewAdapter, PreviewData, PreviewKind } from "../types/preview";
 import { thumbnailQueue } from "./thumbnail-queue";
 import type { ExplorerEntry } from "../types/explorer";
+import { loadSftpVideoPoster, openSftpVideo, videoMime } from "./video-preview";
 
 const TEXT_EXTENSIONS = new Set([
   "txt", "md", "markdown", "log", "csv", "tsv", "json", "yaml", "yml", "toml",
@@ -17,6 +18,7 @@ export function isRawPreview(name: string): boolean {
 
 export function previewKind(name: string): PreviewKind | null {
   const extension = name.slice(name.lastIndexOf(".") + 1).toLowerCase();
+  if (videoMime(name)) return "video";
   if (["jpg", "jpeg", "png"].includes(extension) || isRawPreview(name)) return "image";
   if (extension === "pdf") return "pdf";
   if (!name.includes(".") || name.startsWith(".") || TEXT_EXTENSIONS.has(extension)) return "text";
@@ -57,12 +59,14 @@ export function createSftpPreviewAdapter(sessionId: string): PreviewAdapter {
   return {
     supports: (entry) => entry.entryType === "File" && previewKind(entry.name) !== null,
     async load(entry, signal) {
+      if (videoMime(entry.name)) throw new Error("Use the video preview controls to load this file");
       return decodePreview(await read(entry, signal));
     },
+    video: { open: (entry, signal) => openSftpVideo(sessionId, entry, signal) },
     thumbnails: {
-      supports: (entry) => entry.entryType === "File" && previewKind(entry.name) === "image" && (isRawPreview(entry.name) || entry.size <= 8 * 1024 * 1024),
+      supports: (entry) => entry.entryType === "File" && (videoMime(entry.name) !== null || (previewKind(entry.name) === "image" && (isRawPreview(entry.name) || entry.size <= 8 * 1024 * 1024))),
       load: (entry, signal) => thumbnailQueue.request(sessionId, JSON.stringify([sessionId, entry.id, entry.size, entry.modified]),
-        (signal) => read(entry, signal, true), signal, entry.modified !== null && !entry.isSymlink),
+        (signal) => videoMime(entry.name) ? loadSftpVideoPoster(sessionId, entry, signal) : read(entry, signal, true), signal, entry.modified !== null && !entry.isSymlink),
       async clear() {
         thumbnailQueue.clear(sessionId);
         await invoke("sftp_thumbnail_clear", { sftpSessionId: sessionId });

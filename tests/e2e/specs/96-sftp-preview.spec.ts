@@ -112,4 +112,31 @@ describe("SFTP Quick Look", () => {
         await dialog.waitForDisplayed({ reverse: true });
         await deleteEntry(name);
     });
+
+    it("keeps video loading explicit and preserves original downloads after a codec failure", async () => {
+        // Deliberately malformed MP4 payload: this tests the fallback path on
+        // every webview, without assuming its installed codec set.
+        const payload = Buffer.alloc(2 * 1024 * 1024, 0x31);
+        payload.writeUInt32BE(32, 0); payload.write("ftypisom", 4);
+        const directory = await mkdtemp(join(tmpdir(), "e2e-video-preview-"));
+        const name = `preview-${Date.now()}.mp4`;
+        const local = join(directory, name);
+        await writeFile(local, payload);
+        const sessionId = await activeSftpSessionId();
+        const [uploadId] = await sftpEnqueueUpload(sessionId, [local], "/config");
+        expect(await waitForSftpTransferResult(uploadId)).to.equal("Completed");
+        await refreshExplorer(); await waitForEntry(name);
+        await (await $(`[data-entry-name='${name}']`)).click(); await browser.keys([" "]);
+        const dialog = await $("[data-testid='quick-look']"); await dialog.waitForDisplayed();
+        const load = await dialog.$("button=Load video"); await load.waitForDisplayed();
+        expect(await dialog.$$("video")).to.have.length(0);
+        await load.click();
+        const failure = await dialog.$("[role='alert']"); await failure.waitForDisplayed({ timeout: 30_000 });
+        expect(await failure.getText()).to.include("Download");
+        const [downloadId] = await sftpEnqueueDownload(sessionId, [`/config/${name}`], join(directory, "download"));
+        expect(await waitForSftpTransferResult(downloadId)).to.equal("Completed");
+        expect((await readFile(join(directory, "download", name))).equals(payload)).to.equal(true);
+        await browser.keys(["Escape"]); await dialog.waitForDisplayed({ reverse: true });
+        await deleteEntry(name);
+    });
 });

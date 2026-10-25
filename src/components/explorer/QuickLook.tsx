@@ -5,6 +5,8 @@ import type { PreviewAdapter, PreviewData } from "../../types/preview";
 import { formatBytes } from "../../utils/format";
 import { ModalBackdrop } from "../shared/ModalBackdrop";
 import { isRawPreview } from "../../lib/preview";
+import { videoMime } from "../../lib/video-preview";
+import { VideoPreview } from "./VideoPreview";
 
 interface QuickLookProps {
   adapter: PreviewAdapter;
@@ -13,17 +15,19 @@ interface QuickLookProps {
   onChange: (entry: ExplorerEntry) => void;
   onClose: () => void;
   onDownload: (entry: ExplorerEntry) => void;
+  transfersBusy?: boolean;
 }
 
 const BUTTON = "p-2 rounded-md text-text-secondary hover:bg-bg-subtle disabled:opacity-30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 const PdfPreview = lazy(() => import("./PdfPreview"));
 
-export function QuickLook({ adapter, entry, entries, onChange, onClose, onDownload }: QuickLookProps) {
+export function QuickLook({ adapter, entry, entries, onChange, onClose, onDownload, transfersBusy = false }: QuickLookProps) {
   const [data, setData] = useState<PreviewData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const panel = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const index = entries.findIndex((item) => item.id === entry.id);
+  const isVideo = videoMime(entry.name) !== null && !!adapter.video;
 
   useLayoutEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -44,6 +48,7 @@ export function QuickLook({ adapter, entry, entries, onChange, onClose, onDownlo
     const controller = new AbortController();
     setData(null);
     setError(null);
+    if (isVideo) return;
     void adapter.load(entry, controller.signal).then((result) => {
       if (!controller.signal.aborted) setData(result);
     }, (reason: unknown) => {
@@ -52,7 +57,7 @@ export function QuickLook({ adapter, entry, entries, onChange, onClose, onDownlo
       );
     });
     return () => controller.abort();
-  }, [adapter, entry]);
+  }, [adapter, entry, isVideo]);
 
   return (
     <ModalBackdrop onClose={onClose} className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-8 bg-black/60">
@@ -87,8 +92,8 @@ export function QuickLook({ adapter, entry, entries, onChange, onClose, onDownlo
           <button className={BUTTON} aria-label="Download file" title="Download file" onClick={() => onDownload(entry)}><Download size={18} /></button>
           <button className={BUTTON} aria-label="Close preview" onClick={onClose}><X size={18} /></button>
         </div>
-        <div className="flex-1 min-h-0 overflow-auto bg-bg-base rounded-b-xl" aria-busy={!data && !error}>
-          {error ? <p role="alert" className="p-8 text-sm text-text-secondary">{error}</p> : !data ? (
+        <div className="flex-1 min-h-0 overflow-auto bg-bg-base rounded-b-xl" aria-busy={!isVideo && !data && !error}>
+          {isVideo ? <VideoPreview key={entry.id} adapter={adapter.video!} entry={entry} busy={transfersBusy} /> : error ? <p role="alert" className="p-8 text-sm text-text-secondary">{error}</p> : !data ? (
             <div role="status" className="flex items-center justify-center gap-2 h-full text-sm text-text-muted"><Loader2 size={18} className="motion-safe:animate-spin" />Loading preview…</div>
           ) : <PreviewContent data={data} name={entry.name} />}
         </div>
