@@ -40,6 +40,9 @@ export function decodePreview(buffer: ArrayBuffer): PreviewData {
 }
 
 export function createSftpPreviewAdapter(sessionId: string): PreviewAdapter {
+  const thumbnailKey = (entry: ExplorerEntry) => JSON.stringify([sessionId, entry.id, entry.size, entry.modified]);
+  const cacheable = (entry: ExplorerEntry) => entry.modified != null && !entry.isSymlink;
+  const supportsThumbnail = (entry: ExplorerEntry) => entry.entryType === "File" && (videoMime(entry.name) !== null || (previewKind(entry.name) === "image" && (isRawPreview(entry.name) || /\.(jpe?g)$/i.test(entry.name) || entry.size <= 8 * 1024 * 1024)));
   async function read(entry: ExplorerEntry, signal: AbortSignal, thumbnail = false): Promise<ArrayBuffer> {
     signal.throwIfAborted();
     const requestId = await invoke<string>("sftp_preview_begin", {
@@ -64,9 +67,10 @@ export function createSftpPreviewAdapter(sessionId: string): PreviewAdapter {
     },
     video: { open: (entry, signal) => openSftpVideo(sessionId, entry, signal) },
     thumbnails: {
-      supports: (entry) => entry.entryType === "File" && (videoMime(entry.name) !== null || (previewKind(entry.name) === "image" && (isRawPreview(entry.name) || /\.(jpe?g)$/i.test(entry.name) || entry.size <= 8 * 1024 * 1024))),
-      load: (entry, signal) => thumbnailQueue.request(sessionId, JSON.stringify([sessionId, entry.id, entry.size, entry.modified]),
-        (signal) => videoMime(entry.name) ? loadSftpVideoPoster(sessionId, entry, signal) : read(entry, signal, true), signal, entry.modified !== null && !entry.isSymlink),
+      supports: supportsThumbnail,
+      getCached: (entry) => supportsThumbnail(entry) && cacheable(entry) ? thumbnailQueue.getCached(sessionId, thumbnailKey(entry)) : undefined,
+      load: (entry, signal) => thumbnailQueue.request(sessionId, thumbnailKey(entry),
+        (signal) => videoMime(entry.name) ? loadSftpVideoPoster(sessionId, entry, signal) : read(entry, signal, true), signal, cacheable(entry)),
       async clear() {
         thumbnailQueue.clear(sessionId);
         await invoke("sftp_thumbnail_clear", { sftpSessionId: sessionId });

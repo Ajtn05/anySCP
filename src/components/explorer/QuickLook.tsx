@@ -22,11 +22,13 @@ const PdfPreview = lazy(() => import("./PdfPreview"));
 
 export function QuickLook({ adapter, entry, entries, onChange, onClose, onDownload, transfersBusy = false }: QuickLookProps) {
   const [data, setData] = useState<PreviewData | null>(null);
+  const [thumbnail, setThumbnail] = useState<PreviewData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const panel = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const index = entries.findIndex((item) => item.id === entry.id);
   const isVideo = videoMime(entry.name) !== null && !!adapter.video;
+  const content = data ?? thumbnail;
 
   useLayoutEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -41,12 +43,12 @@ export function QuickLook({ adapter, entry, entries, onChange, onClose, onDownlo
     panel.current?.focus();
     setData(null);
     setError(null);
-  }, [entry.id]);
+    const bytes = !isVideo ? adapter.thumbnails?.getCached?.(entry) : undefined;
+    setThumbnail(bytes ? { kind: "image", sourceSize: entry.size, truncated: false, bytes } : null);
+  }, [adapter, entry, isVideo]);
 
   useEffect(() => {
     const controller = new AbortController();
-    setData(null);
-    setError(null);
     if (isVideo) return;
     void adapter.load(entry, controller.signal).then((result) => {
       if (!controller.signal.aborted) setData(result);
@@ -84,7 +86,10 @@ export function QuickLook({ adapter, entry, entries, onChange, onClose, onDownlo
         <div className="flex items-center gap-2 px-3 sm:px-5 py-3 border-b border-border shrink-0">
           <div className="flex-1 min-w-0">
             <h2 id={titleId} className="truncate font-medium text-text-primary">{entry.name}</h2>
-            <p className="text-xs text-text-muted">{formatBytes(data?.sourceSize ?? entry.size)} · Quick Look</p>
+            <p className="text-xs text-text-muted">{formatBytes(data?.sourceSize ?? entry.size)} · Quick Look
+              {thumbnail && !data && !error && <span role="status"> · Loading full preview…</span>}
+            </p>
+            {thumbnail && error && <p role="alert" className="text-xs text-text-secondary">Showing cached thumbnail. {error}</p>}
           </div>
           <button className={BUTTON} aria-label="Previous file" disabled={index <= 0} onClick={() => onChange(entries[index - 1])}><ChevronLeft size={18} /></button>
           <button className={BUTTON} aria-label="Next file" disabled={index < 0 || index >= entries.length - 1} onClick={() => onChange(entries[index + 1])}><ChevronRight size={18} /></button>
@@ -92,9 +97,9 @@ export function QuickLook({ adapter, entry, entries, onChange, onClose, onDownlo
           <button className={BUTTON} aria-label="Close preview" onClick={onClose}><X size={18} /></button>
         </div>
         <div className="flex-1 min-h-0 overflow-auto bg-bg-base rounded-b-xl" aria-busy={!isVideo && !data && !error}>
-          {isVideo ? <VideoPreview key={entry.id} adapter={adapter.video!} entry={entry} busy={transfersBusy} /> : error ? <p role="alert" className="p-8 text-sm text-text-secondary">{error}</p> : !data ? (
+          {isVideo ? <VideoPreview key={entry.id} adapter={adapter.video!} entry={entry} busy={transfersBusy} /> : content ? <PreviewContent data={content} name={entry.name} /> : error ? <p role="alert" className="p-8 text-sm text-text-secondary">{error}</p> : (
             <div role="status" className="flex items-center justify-center gap-2 h-full text-sm text-text-muted"><Loader2 size={18} className="motion-safe:animate-spin" />Loading preview…</div>
-          ) : <PreviewContent data={data} name={entry.name} />}
+          )}
         </div>
       </div>
     </ModalBackdrop>
@@ -103,7 +108,7 @@ export function QuickLook({ adapter, entry, entries, onChange, onClose, onDownlo
 
 function PreviewContent({ data, name }: { data: PreviewData; name: string }) {
   const [url, setUrl] = useState<string | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (data.kind !== "image") return;
     const objectUrl = URL.createObjectURL(new Blob([data.bytes], { type: "image/png" }));
     setUrl(objectUrl);

@@ -24,6 +24,8 @@ export interface PreviewAdapter {
   video?: { open(entry: ExplorerEntry, signal: AbortSignal): Promise<VideoSource> };
   thumbnails?: {
     supports(entry: ExplorerEntry): boolean;
+    /** Return a cached PNG without I/O, subject to the usual invalidation rules. */
+    getCached?(entry: ExplorerEntry): ArrayBuffer | undefined;
     load(entry: ExplorerEntry, signal: AbortSignal): Promise<ArrayBuffer>;
     clear(): Promise<void>;
   };

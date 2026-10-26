@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSftpPreviewAdapter, decodePreview, isRawPreview, previewKind } from "./preview";
 import { createSftpProvider } from "../providers/sftp-provider";
 import { createS3Provider } from "../providers/s3-provider";
 import type { ExplorerEntry } from "../types/explorer";
+import { thumbnailQueue } from "./thumbnail-queue";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke, convertFileSrc: (id: string, scheme: string) => `${scheme}://localhost/${id}` }));
@@ -18,6 +19,7 @@ function packet(kind = "text") {
 }
 
 describe("SFTP previews", () => {
+  afterEach(() => { thumbnailQueue.clear("cached-session"); vi.restoreAllMocks(); });
   beforeEach(() => {
     invoke.mockReset();
     invoke.mockImplementation(async (command) => command === "sftp_preview_begin" ? "request" : command === "sftp_preview_read" ? packet() : undefined);
@@ -87,6 +89,31 @@ describe("SFTP previews", () => {
     expect(invoke).toHaveBeenCalledWith("sftp_preview_begin", { sftpSessionId: "thumb-session", path: entry.id, thumbnail: true });
     await adapter.clear();
     expect(invoke).toHaveBeenCalledWith("sftp_thumbnail_clear", { sftpSessionId: "thumb-session" });
+  });
+
+  it("reuses only a fresh matching thumbnail without additional backend calls", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(100);
+    const adapter = createSftpPreviewAdapter("cached-session").thumbnails!;
+    const image = { ...entry, id: "/photo.jpg", name: "photo.jpg", size: 100, modified: 1, isSymlink: false };
+    expect(adapter.getCached!(image)).toBeUndefined();
+    expect(invoke).not.toHaveBeenCalled();
+    const bytes = await adapter.load(image, new AbortController().signal);
+    invoke.mockClear();
+    expect(adapter.getCached!(image)).toBe(bytes);
+    expect(createSftpPreviewAdapter("cached-session").thumbnails!.getCached!(image)).toBe(bytes);
+    expect(createSftpPreviewAdapter("other-session").thumbnails!.getCached!(image)).toBeUndefined();
+    for (const changed of [
+      { ...image, id: "/other.jpg" }, { ...image, size: 101 }, { ...image, modified: 2 },
+      { ...image, modified: null }, { ...image, isSymlink: true }, { ...image, entryType: "Directory" as const },
+    ]) expect(adapter.getCached!(changed)).toBeUndefined();
+    expect(invoke).not.toHaveBeenCalled();
+    now.mockReturnValue(30_100);
+    expect(adapter.getCached!(image)).toBeUndefined();
+    await adapter.load(image, new AbortController().signal);
+    await adapter.clear();
+    invoke.mockClear();
+    expect(adapter.getCached!(image)).toBeUndefined();
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it("offers bounded embedded RAW previews without applying the full source-size limit", async () => {

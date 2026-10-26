@@ -5,6 +5,36 @@ const bytes = (n = 3) => new ArrayBuffer(n);
 afterEach(() => vi.restoreAllMocks());
 
 describe("thumbnail scheduling and memory cache", () => {
+  it("looks up completed thumbnails synchronously without starting or joining work", async () => {
+    const queue = new ThumbnailQueue(); let finish!: (data: ArrayBuffer) => void;
+    const run = vi.fn(() => new Promise<ArrayBuffer>((resolve) => { finish = resolve; }));
+    expect(queue.getCached("s", "photo")).toBeUndefined();
+    const pending = queue.request("s", "photo", run, signal());
+    expect(queue.getCached("s", "photo")).toBeUndefined();
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    const data = bytes(); finish(data); await pending;
+    expect(queue.getCached("s", "photo")).toBe(data);
+    expect(queue.getCached("other", "photo")).toBeUndefined();
+    queue.clear("s");
+    expect(queue.getCached("s", "photo")).toBeUndefined();
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it("applies LRU and expiry to synchronous cache lookups", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(100);
+    const queue = new ThumbnailQueue(6, 2, 10);
+    await queue.request("s", "a", async () => bytes(), signal());
+    await queue.request("s", "b", async () => bytes(), signal());
+    expect(queue.getCached("s", "a")).toBeDefined();
+    await queue.request("s", "c", async () => bytes(), signal());
+    expect(queue.getCached("s", "b")).toBeUndefined();
+    now.mockReturnValue(110);
+    expect(queue.getCached("s", "a")).toBeUndefined();
+    expect(queue.getCached("s", "c")).toBeUndefined();
+    await queue.request("s", "d", async () => bytes(), signal());
+    expect(queue.getCached("s", "d")).toBeDefined();
+  });
+
   it("deduplicates requests without cancelling another visible consumer", async () => {
     const queue = new ThumbnailQueue(); let finish!: (data: ArrayBuffer) => void;
     const run = vi.fn((_signal: AbortSignal) => new Promise<ArrayBuffer>((resolve) => { finish = resolve; }));

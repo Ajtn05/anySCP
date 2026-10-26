@@ -17,17 +17,25 @@ export class ThumbnailQueue {
 
   constructor(private byteLimit = 16 * 1024 * 1024, private entryLimit = 128, private ttl = 30_000) {}
 
+  /** Read completed work without starting or joining a background request. */
+  getCached(session: string, key: string): ArrayBuffer | undefined {
+    key = JSON.stringify([session, key]);
+    const cached = this.cache.get(key);
+    if (!cached) return;
+    this.cache.delete(key);
+    if (cached.expires <= Date.now()) {
+      this.bytes -= cached.data.byteLength;
+      return;
+    }
+    this.cache.set(key, cached);
+    return cached.data;
+  }
+
   request(session: string, key: string, run: Job["run"], signal: AbortSignal, cacheable = true): Promise<ArrayBuffer> {
     signal.throwIfAborted();
+    const cached = cacheable ? this.getCached(session, key) : undefined;
+    if (cached) return Promise.resolve(cached);
     key = JSON.stringify([session, key]);
-    const cached = cacheable ? this.cache.get(key) : undefined;
-    if (cached) {
-      if (cached.expires > Date.now()) {
-        this.cache.delete(key); this.cache.set(key, cached);
-        return Promise.resolve(cached.data);
-      }
-      this.cache.delete(key); this.bytes -= cached.data.byteLength;
-    }
     let job = this.jobs.get(key);
     if (!job) {
       if (this.jobs.size >= 128) return Promise.reject({ kind: "preview_deferred" });

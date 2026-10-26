@@ -56,6 +56,14 @@ posters get automatic thumbnails;
 other files retain icons and their existing Quick Look/Download actions. Grid
 thumbnails fit within 320 × 320 pixels without enlarging small images.
 
+Quick Look immediately displays a matching, unexpired image thumbnail from the
+memory cache while it loads the larger preview. Cache misses start only the
+normal foreground preview, without another thumbnail request. The cached image
+remains visible with an error message if the larger preview fails. Navigation
+cancels the previous preview and switches to the next file's cached image, or
+the normal loading indicator when none is available. The existing session,
+metadata, expiry, and invalidation rules apply to this reuse.
+
 An IntersectionObserver shared by the scroll container starts work only for
 visible images. Scrolling images offscreen cancels their reads and releases
 their object URLs. A bounded queue deduplicates requests and fetches one image
