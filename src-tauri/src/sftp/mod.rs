@@ -1,4 +1,5 @@
 pub mod commands;
+mod jpeg_thumbnail;
 pub mod preview;
 mod raw_preview;
 pub mod thumbnail_cache;

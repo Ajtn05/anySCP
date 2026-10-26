@@ -41,8 +41,9 @@ cache for original files.
 
 Use the **Thumbnail view** toolbar button for a grid. List view remains the
 default; selection, sorting, rename, menus, uploads, and drag actions are shared
-between both views. JPEG/PNG sources up to 8 MiB, supported embedded RAW JPEGs
-up to 8 MiB, and bounded video posters get automatic thumbnails;
+between both views. JPEG/PNG sources up to 8 MiB, JPEG photos with usable embedded
+EXIF thumbnails, supported embedded RAW JPEGs up to 8 MiB, and bounded video
+posters get automatic thumbnails;
 other files retain icons and their existing Quick Look/Download actions. Grid
 thumbnails fit within 320 × 320 pixels without enlarging small images.
 
@@ -51,8 +52,37 @@ visible images. Scrolling images offscreen cancels their reads and releases
 their object URLs. A bounded queue deduplicates requests and fetches one image
 at a time across tabs. Hidden tabs and an open Quick Look stop background
 loading. Active/queued transfers pause it; the Rust reader also checks queued
-and legacy SFTP transfer state between 32 KiB chunks. Blocking decodes retain
-their permit until completion.
+and legacy SFTP transfer state between requests. Full JPEG/PNG fallback reads
+request up to 128 KiB at a time; JPEG header probes, RAW reads, and video poster
+reads retain 32 KiB checkpoints. Only one read/decoder runs at a time, so a new
+transfer can have at most one existing thumbnail read to wait for. Blocking
+decodes retain their permit until completion.
+
+### Faster photo thumbnails
+
+JPEG thumbnails first inspect a contiguous prefix of at most 128 KiB for a
+standard EXIF APP1 JPEG thumbnail. A usable embedded image avoids reading and
+decoding the full photo, including photos larger than the normal automatic
+source limit. The existing bounded TIFF reader validates offsets against the
+APP1 payload, supports either byte order, and preserves orientation. Missing or
+malformed EXIF and undecodable embedded images fall back to the full JPEG only
+when the original is within the 8 MiB limit. The already-read prefix is reused;
+it is never fetched twice. Large JPEGs without an eligible embedded preview
+retain their file icon after the bounded header probe. Quick Look continues to
+use the original image, and Download continues to transfer its original bytes.
+
+This follows the APP1/IFD1 layout in the [CIPA EXIF specification](https://www.cipa.jp/std/documents/e/DC-008-2012_E.pdf).
+Only the resulting resized PNG enters the existing thumbnail caches. A camera's
+embedded thumbnail may have lower resolution or reflect an earlier camera render.
+
+Deterministic SFTP protocol fixtures verify that a generated 10 MiB JPEG with a
+small EXIF thumbnail reads 32 KiB in one data request, then reads no additional
+file data on a cache hit. A generated 2 MiB JPEG without a thumbnail takes 18
+read requests, including EOF, instead of the previous 65. These are byte/request
+counts from an in-memory server, not real-network timing guarantees. Tests also
+cover larger metadata segments, bad offsets, malformed embedded JPEG fallback,
+orientation, metadata changes, cancellation, transfer deferral, closed handles,
+and byte-identical original downloads.
 
 The compressed-byte memory LRU holds at most 16 MiB / 128 thumbnails, with a
 30-second expiry. Symlinks and entries without timestamps bypass memory reuse.
@@ -101,9 +131,9 @@ deadline. Background reads check transfer state between packets up to 32 KiB.
 
 Quick Look selects the largest eligible embedded JPEG by compressed byte size;
 the grid selects the smallest to save bandwidth. Container orientation is
-applied once, falling back to JPEG orientation when absent. The header labels
-this as **Embedded JPEG**: it reflects the camera's rendering and can have lower
-resolution than the sensor image. Only the resized PNG enters thumbnail caches;
+applied once, falling back to JPEG orientation when absent. The preview reflects
+the camera's rendering and can have lower resolution than the sensor image.
+Only the resized PNG enters thumbnail caches;
 Download continues to transfer the original RAW file.
 
 Missing, corrupt, oversized, or unsupported embedded JPEGs retain the icon and

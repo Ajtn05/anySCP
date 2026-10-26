@@ -12,7 +12,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    raw_preview,
+    jpeg_thumbnail, raw_preview,
     thumbnail_cache::{CacheKey, ThumbnailCache},
     transfer_manager::TransferManager,
 };
@@ -24,6 +24,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PIXELS: u64 = 40_000_000;
 const MAX_DECODE_BYTES: u64 = 128 * 1024 * 1024;
 const THUMBNAIL_SOURCE_LIMIT: u64 = 8 * 1024 * 1024;
+const THUMBNAIL_READ_CHUNK: usize = 128 * 1024;
 
 struct Request {
     session_id: String,
@@ -314,6 +315,8 @@ async fn load_thumbnail(
         ));
     }
     let raw = raw_preview::supports(path);
+    let jpeg = jpeg_thumbnail::supports(path);
+    let permit = Arc::new(permit);
     let generation = cache.generation(session_id).await;
     let attrs = {
         let sftp = session.lock().await;
@@ -324,9 +327,11 @@ async fn load_thumbnail(
     if attrs.file_type() != russh_sftp::protocol::FileType::File
         || attrs
             .size
-            .is_none_or(|size| !raw && size > THUMBNAIL_SOURCE_LIMIT)
+            .is_none_or(|size| !raw && !jpeg && size > THUMBNAIL_SOURCE_LIMIT)
     {
-        return Err(error("Automatic thumbnails require a regular file with a known size. JPEG/PNG sources are limited to 8 MiB. Use Quick Look to preview larger images."));
+        return Err(error(
+            "A thumbnail is not available for this file. Use Quick Look or Download.",
+        ));
     }
     let key = attrs.mtime.map(|modified| CacheKey {
         session: session_id.into(),
@@ -359,7 +364,7 @@ async fn load_thumbnail(
         {
             return Err(error("The image changed before loading"));
         }
-        let (bytes, orientation) = if raw {
+        let input = if raw {
             let jpeg = raw_preview::extract(
                 &mut file,
                 before.size.unwrap_or(0),
@@ -369,31 +374,65 @@ async fn load_thumbnail(
                 &busy,
             )
             .await?;
-            (jpeg.bytes, jpeg.orientation)
+            ThumbnailInput::Source(jpeg.bytes, jpeg.orientation)
+        } else if jpeg {
+            let probe = jpeg_thumbnail::probe(
+                &mut file,
+                before.size.unwrap_or(0),
+                token,
+                &busy,
+            )
+            .await?;
+            let ready = if let Some(embedded) = probe.embedded {
+                if busy() {
+                    return Err(SftpError::PreviewDeferred);
+                }
+                // A bad embedded image falls back to the original, within the
+                // same source limit. Never make a usable JPEG lose its preview.
+                render_thumbnail(embedded.bytes, embedded.orientation, permit.clone())
+                    .await
+                    .ok()
+            } else {
+                None
+            };
+            if let Some(bytes) = ready {
+                ThumbnailInput::Ready(bytes)
+            } else {
+                if before.size.unwrap_or(0) > THUMBNAIL_SOURCE_LIMIT {
+                    return Err(error("A thumbnail is not available for this photo. Use Quick Look or Download."));
+                }
+                ThumbnailInput::Source(
+                    read_thumbnail_remainder(&mut file, probe.prefix, token, &busy).await?,
+                    None,
+                )
+            }
         } else {
-            (read_thumbnail_source(&mut file, token, &busy).await?, None)
+            ThumbnailInput::Source(read_thumbnail_source(&mut file, token, &busy).await?, None)
         };
         let after = file.metadata().await.map_err(|e| error(e.to_string()))?;
         if before.size != after.size
             || before.mtime != after.mtime
-            || (!raw && bytes.len() as u64 != before.size.unwrap_or(0))
+            || (!raw && matches!(&input, ThumbnailInput::Source(bytes, _) if bytes.len() as u64 != before.size.unwrap_or(0)))
         {
             return Err(error("The image changed while loading"));
         }
-        Ok((bytes, orientation))
+        Ok(input)
     }
     .await;
     let _ = file.shutdown().await;
-    let (bytes, orientation) = read?;
+    let input = read?;
     if busy() {
         return Err(SftpError::PreviewDeferred);
     }
-    let bytes = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        image_preview_oriented(&bytes, 320, orientation)
-    })
-    .await
-    .map_err(|e| error(e.to_string()))??;
+    let bytes = match input {
+        ThumbnailInput::Ready(bytes) => {
+            drop(permit);
+            bytes
+        }
+        ThumbnailInput::Source(bytes, orientation) => {
+            render_thumbnail(bytes, orientation, permit).await?
+        }
+    };
     if token.is_cancelled() {
         return Err(SftpError::TransferCancelled);
     }
@@ -404,13 +443,39 @@ async fn load_thumbnail(
     Ok(bytes)
 }
 
+enum ThumbnailInput {
+    Source(Vec<u8>, Option<image::metadata::Orientation>),
+    Ready(Vec<u8>),
+}
+
+async fn render_thumbnail(
+    bytes: Vec<u8>,
+    orientation: Option<image::metadata::Orientation>,
+    permit: Arc<tokio::sync::OwnedSemaphorePermit>,
+) -> Result<Vec<u8>, SftpError> {
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        image_preview_oriented(&bytes, 320, orientation)
+    })
+    .await
+    .map_err(|e| error(e.to_string()))?
+}
+
 async fn read_thumbnail_source<R: AsyncRead + Unpin>(
     reader: &mut R,
     token: &CancellationToken,
     busy: &impl Fn() -> bool,
 ) -> Result<Vec<u8>, SftpError> {
-    let mut bytes = Vec::new();
-    let mut chunk = [0; 32 * 1024];
+    read_thumbnail_remainder(reader, Vec::new(), token, busy).await
+}
+
+async fn read_thumbnail_remainder<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    mut bytes: Vec<u8>,
+    token: &CancellationToken,
+    busy: &impl Fn() -> bool,
+) -> Result<Vec<u8>, SftpError> {
+    let mut chunk = vec![0; THUMBNAIL_READ_CHUNK];
     loop {
         if busy() {
             return Err(SftpError::PreviewDeferred);
@@ -625,6 +690,7 @@ pub(super) mod tests {
         closed: Arc<AtomicUsize>,
         opened: Arc<AtomicUsize>,
         bytes_read: Arc<AtomicUsize>,
+        read_requests: Arc<AtomicUsize>,
         change_after_read: bool,
         reported_size: Option<u64>,
         mode: u32,
@@ -681,6 +747,7 @@ pub(super) mod tests {
             offset: u64,
             len: u32,
         ) -> Result<Data, StatusCode> {
+            self.read_requests.fetch_add(1, Ordering::SeqCst);
             if offset >= self.bytes.len() as u64 {
                 return Err(StatusCode::Eof);
             }
@@ -721,10 +788,22 @@ pub(super) mod tests {
         mode: u32,
         change_after_read: bool,
     ) -> (TestConnection, Arc<AtomicUsize>) {
+        let (connection, bytes_read, _) =
+            test_session_stats(bytes, reported_size, mode, change_after_read).await;
+        (connection, bytes_read)
+    }
+
+    async fn test_session_stats(
+        bytes: Vec<u8>,
+        reported_size: Option<u64>,
+        mode: u32,
+        change_after_read: bool,
+    ) -> (TestConnection, Arc<AtomicUsize>, Arc<AtomicUsize>) {
         let (client, server) = tokio::io::duplex(1024 * 1024);
         let closed = Arc::new(AtomicUsize::new(0));
         let opened = Arc::new(AtomicUsize::new(0));
         let bytes_read = Arc::new(AtomicUsize::new(0));
+        let read_requests = Arc::new(AtomicUsize::new(0));
         tokio::spawn(russh_sftp::server::run(
             server,
             TestServer {
@@ -734,6 +813,7 @@ pub(super) mod tests {
                 closed: closed.clone(),
                 opened: opened.clone(),
                 bytes_read: bytes_read.clone(),
+                read_requests: read_requests.clone(),
                 change_after_read,
             },
         ));
@@ -741,11 +821,168 @@ pub(super) mod tests {
         (
             (Arc::new(tokio::sync::Mutex::new(session)), closed, opened),
             bytes_read,
+            read_requests,
         )
     }
 
     async fn permit() -> tokio::sync::OwnedSemaphorePermit {
         Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap()
+    }
+
+    fn encoded_jpeg(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Cursor::new(Vec::new());
+        DynamicImage::new_rgb8(width, height)
+            .write_to(&mut bytes, ImageFormat::Jpeg)
+            .unwrap();
+        bytes.into_inner()
+    }
+
+    #[tokio::test]
+    async fn camera_jpeg_thumbnail_reads_only_a_header_and_keeps_original_download_intact() {
+        let main = encoded_jpeg(800, 400);
+        let thumbnail = encoded_jpeg(160, 80);
+        let mut source = jpeg_thumbnail::tests::with_thumbnail(&main, &thumbnail, true);
+        source.resize(10 * 1024 * 1024, 0);
+        let ((session, closed, opened), reads, requests) =
+            test_session_stats(source.clone(), None, 0o100644, false).await;
+        let directory = tempfile::tempdir().unwrap();
+        let cache = ThumbnailCache::new();
+        let token = CancellationToken::new();
+        let first = load_thumbnail(
+            session.clone(),
+            "s",
+            "/camera.JPG",
+            &token,
+            permit().await,
+            &cache,
+            directory.path(),
+            || false,
+        )
+        .await
+        .unwrap();
+        let image = image::load_from_memory(&first).unwrap();
+        assert_eq!((image.width(), image.height()), (80, 160));
+        assert_eq!(reads.load(Ordering::SeqCst), 32 * 1024);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert_eq!(closed.load(Ordering::SeqCst), 1);
+        assert_eq!(opened.load(Ordering::SeqCst), 1);
+        let second = load_thumbnail(
+            session.clone(),
+            "s",
+            "/camera.JPG",
+            &token,
+            permit().await,
+            &cache,
+            directory.path(),
+            || false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(reads.load(Ordering::SeqCst), 32 * 1024);
+        assert_eq!(opened.load(Ordering::SeqCst), 1);
+        let mut file = session.lock().await.open("/camera.JPG").await.unwrap();
+        let mut downloaded = Vec::new();
+        file.read_to_end(&mut downloaded).await.unwrap();
+        file.shutdown().await.unwrap();
+        assert_eq!(downloaded, source);
+    }
+
+    #[tokio::test]
+    async fn jpeg_fallback_reuses_header_bytes_and_requests_larger_chunks() {
+        let mut source = encoded_jpeg(800, 400);
+        source.resize(2 * 1024 * 1024, 0);
+        let ((session, closed, _), reads, requests) =
+            test_session_stats(source.clone(), None, 0o100644, false).await;
+        let directory = tempfile::tempdir().unwrap();
+        let bytes = load_thumbnail(
+            session,
+            "s",
+            "/photo.jpg",
+            &CancellationToken::new(),
+            permit().await,
+            &ThumbnailCache::new(),
+            directory.path(),
+            || false,
+        )
+        .await
+        .unwrap();
+        let image = image::load_from_memory(&bytes).unwrap();
+        assert_eq!((image.width(), image.height()), (320, 160));
+        // Previously 64 data requests plus EOF; now one header, 16 remainder
+        // requests, and EOF. The header is never downloaded twice.
+        assert_eq!(reads.load(Ordering::SeqCst), source.len());
+        assert_eq!(requests.load(Ordering::SeqCst), 18);
+        assert_eq!(closed.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn corrupt_embedded_jpegs_fall_back_and_changed_photos_never_enter_cache() {
+        let main = encoded_jpeg(800, 400);
+        let corrupt = jpeg_thumbnail::tests::with_thumbnail(&main, &[0xff, 0xd8, 0xff, 1], false);
+        let ((session, closed, _), reads) =
+            test_session_counted(corrupt.clone(), None, 0o100644, false).await;
+        let directory = tempfile::tempdir().unwrap();
+        let bytes = load_thumbnail(
+            session,
+            "s",
+            "/photo.jpeg",
+            &CancellationToken::new(),
+            permit().await,
+            &ThumbnailCache::new(),
+            directory.path(),
+            || false,
+        )
+        .await
+        .unwrap();
+        let image = image::load_from_memory(&bytes).unwrap();
+        assert_eq!((image.width(), image.height()), (160, 320));
+        assert_eq!(reads.load(Ordering::SeqCst), corrupt.len());
+        assert_eq!(closed.load(Ordering::SeqCst), 1);
+
+        let source = jpeg_thumbnail::tests::with_thumbnail(&main, &encoded_jpeg(160, 80), true);
+        let ((session, closed, _), _) = test_session_counted(source, None, 0o100644, true).await;
+        let directory = tempfile::tempdir().unwrap();
+        let result = load_thumbnail(
+            session,
+            "s",
+            "/changed.jpeg",
+            &CancellationToken::new(),
+            permit().await,
+            &ThumbnailCache::new(),
+            directory.path(),
+            || false,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(SftpError::ProtocolError(message)) if message.contains("changed while loading"))
+        );
+        assert_eq!(closed.load(Ordering::SeqCst), 1);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn large_jpegs_without_embedded_previews_do_not_trigger_full_downloads() {
+        let mut source = encoded_jpeg(800, 400);
+        source.resize(64 * 1024, 0);
+        let ((session, closed, _), reads) =
+            test_session_counted(source, Some(64 * 1024 * 1024), 0o100644, false).await;
+        let directory = tempfile::tempdir().unwrap();
+        assert!(load_thumbnail(
+            session,
+            "s",
+            "/large.jpg",
+            &CancellationToken::new(),
+            permit().await,
+            &ThumbnailCache::new(),
+            directory.path(),
+            || false
+        )
+        .await
+        .is_err());
+        assert_eq!(reads.load(Ordering::SeqCst), 32 * 1024);
+        assert_eq!(closed.load(Ordering::SeqCst), 1);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
     }
 
     #[tokio::test]
@@ -1068,7 +1305,7 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn background_reads_yield_at_the_next_chunk_when_a_transfer_starts() {
-        let source = vec![1; 100_000];
+        let source = vec![1; THUMBNAIL_READ_CHUNK * 2];
         let mut reader = source.as_slice();
         let calls = AtomicUsize::new(0);
         let result = read_thumbnail_source(&mut reader, &CancellationToken::new(), &|| {
@@ -1076,7 +1313,7 @@ pub(super) mod tests {
         })
         .await;
         assert!(matches!(result, Err(SftpError::PreviewDeferred)));
-        assert_eq!(reader.len(), source.len() - 32 * 1024);
+        assert_eq!(reader.len(), source.len() - THUMBNAIL_READ_CHUNK);
     }
 
     #[test]
