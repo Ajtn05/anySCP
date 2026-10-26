@@ -27,6 +27,7 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
 
 import { S3Browser } from "../S3Browser";
 import { useS3Store } from "../../../stores/s3-store";
+import { useSettingsStore } from "../../../stores/settings-store";
 import type { S3Entry, S3ListResult } from "../../../types";
 
 const SESSION_ID = "s3-sess";
@@ -63,6 +64,7 @@ function serveListing(pages: Record<string, S3ListResult>): void {
 describe("S3Browser — paged listings (issue #137)", () => {
   beforeEach(() => {
     invoke.mockReset();
+    useSettingsStore.setState({ explorerShowHiddenFiles: true });
     useS3Store.setState({ sessions: new Map(), activeS3SessionId: null });
     const store = useS3Store.getState();
     store.openSession(SESSION_ID, "minio");
@@ -75,7 +77,7 @@ describe("S3Browser — paged listings (issue #137)", () => {
     render(<S3Browser sessionId={SESSION_ID} />);
 
     expect(await screen.findByTestId("s3-load-more")).toBeInTheDocument();
-    expect(screen.getByTestId("s3-load-more-count")).toHaveTextContent("Showing 2 items");
+    expect(screen.getByTestId("s3-load-more-count")).toHaveTextContent("Loaded 2 items");
     expect(listCalls()).toEqual([
       { s3SessionId: SESSION_ID, prefix: "", continuationToken: null },
     ]);
@@ -113,5 +115,18 @@ describe("S3Browser — paged listings (issue #137)", () => {
       expect(useS3Store.getState().sessions.get(SESSION_ID)!.entries).toHaveLength(1),
     );
     expect(screen.queryByTestId("s3-load-more")).not.toBeInTheDocument();
+  });
+
+  it("keeps pagination available when a page contains only hidden files", async () => {
+    useSettingsStore.setState({ explorerShowHiddenFiles: false });
+    serveListing({ first: page([".env"], "next"), next: page(["visible.txt"], null) });
+    render(<S3Browser sessionId={SESSION_ID} />);
+    expect(await screen.findByText("No visible items")).toBeVisible();
+    expect(screen.queryByTestId("explorer-entry-.env")).toBeNull();
+    fireEvent.click(screen.getByTestId("s3-load-more-button"));
+    expect(await screen.findByTestId("explorer-entry-visible.txt")).toBeVisible();
+    expect(listCalls()[1].continuationToken).toBe("next");
+    expect(useS3Store.getState().sessions.get(SESSION_ID)!.entries.map((entry) => entry.name))
+      .toEqual([".env", "visible.txt"]);
   });
 });

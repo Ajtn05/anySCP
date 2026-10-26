@@ -12,7 +12,7 @@ import { explorerInvoke, transferEventName, type Transport } from "../../lib/exp
 import { editorLaunchErrorMessage } from "../../lib/editor-errors";
 import { conflictingNames } from "../../lib/drop-conflicts";
 import { toast } from "../../stores/toast-store";
-import type { EditorConfig } from "../../stores/settings-store";
+import { useSettingsStore, type EditorConfig } from "../../stores/settings-store";
 import { QuickLook } from "../explorer/QuickLook";
 import { useTransferStore } from "../../stores/transfer-store";
 
@@ -48,6 +48,7 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
   const provider = useMemo(() => createSftpProvider(sessionId, transport), [sessionId, transport]);
   const [preview, setPreview] = useState<{ entry: ExplorerEntry; entries: ExplorerEntry[] } | null>(null);
   const closePreview = useCallback(() => setPreview(null), []);
+  const showHiddenFiles = useSettingsStore((s) => s.explorerShowHiddenFiles);
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
   const [thumbnailRevision, setThumbnailRevision] = useState(0);
   const [clearingThumbnails, setClearingThumbnails] = useState(false);
@@ -64,7 +65,7 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
     finally { setThumbnailRevision((n) => n + 1); setClearingThumbnails(false); }
   }, [provider]);
   useEffect(() => () => { void provider.preview?.thumbnails?.clear().catch(() => {}); }, [provider]);
-  useEffect(() => { setPreview(null); }, [sessionId, transport, session?.currentPath, isActive]);
+  useEffect(() => { setPreview(null); }, [sessionId, transport, session?.currentPath, isActive, showHiddenFiles]);
 
   // ─── Drag-and-drop (OS → App) ─────────────────────────────────────────────
 

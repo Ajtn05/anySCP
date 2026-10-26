@@ -12,8 +12,11 @@ import {
   LayoutGrid,
   List,
   Eraser,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import type { FileSystemProvider } from "../../types/explorer";
+import { useSettingsStore } from "../../stores/settings-store";
 
 interface BreadcrumbSegment {
   label: string;
@@ -111,6 +114,8 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
 }: ExplorerToolbarProps) {
   const caps = provider.capabilities;
   const providerType = provider.type;
+  const showHiddenFiles = useSettingsStore((s) => s.explorerShowHiddenFiles);
+  const setShowHiddenFiles = useSettingsStore((s) => s.setExplorerShowHiddenFiles);
 
   const [isEditing, setIsEditing] = useState(false);
   const [draftPath, setDraftPath] = useState(currentPath);
@@ -262,6 +267,16 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
 
       {/* Separator */}
       <span className="w-px h-4 bg-border shrink-0" aria-hidden="true" />
+
+      <button
+        className={ICON_BTN_CLASS}
+        aria-label="Show hidden files"
+        aria-pressed={showHiddenFiles}
+        title={showHiddenFiles ? "Hide hidden files" : "Show hidden files"}
+        onClick={() => setShowHiddenFiles(!showHiddenFiles)}
+      >
+        {showHiddenFiles ? <Eye size={15} aria-hidden="true" /> : <EyeOff size={15} aria-hidden="true" />}
+      </button>
 
       {/* Upload file */}
       {provider.preview?.thumbnails && onViewModeChange && <div role="group" aria-label="File view" className="flex items-center gap-0.5 shrink-0">

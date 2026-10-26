@@ -678,9 +678,18 @@ function TerminalSettings() {
 function ExplorerSettings() {
   const doubleClickAction = useSettingsStore((s) => s.explorerDoubleClickAction);
   const setDoubleClickAction = useSettingsStore((s) => s.setExplorerDoubleClickAction);
+  const showHiddenFiles = useSettingsStore((s) => s.explorerShowHiddenFiles);
+  const setShowHiddenFiles = useSettingsStore((s) => s.setExplorerShowHiddenFiles);
 
   return (
     <SettingsGroup>
+      <SettingRow>
+        <div>
+          <label htmlFor="s-show-hidden-files" className={LABEL_CLASS}>Show hidden files</label>
+          <p className={DESC_CLASS}>Show files and folders with names that start with a dot.</p>
+        </div>
+        <Toggle id="s-show-hidden-files" checked={showHiddenFiles} onChange={setShowHiddenFiles} />
+      </SettingRow>
       <SettingRow>
         <div>
           <p className={LABEL_CLASS}>Double-click a File</p>

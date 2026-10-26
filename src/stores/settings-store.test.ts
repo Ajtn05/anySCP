@@ -120,6 +120,40 @@ describe("settings-store — explorer double-click action", () => {
   });
 });
 
+describe("settings-store — hidden files", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue(undefined);
+    useSettingsStore.setState({ explorerShowHiddenFiles: true });
+  });
+
+  it("saves both visibility choices", async () => {
+    useSettingsStore.getState().setExplorerShowHiddenFiles(false);
+    expect(useSettingsStore.getState().explorerShowHiddenFiles).toBe(false);
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("save_setting", {
+      key: "explorer_show_hidden_files", value: "false",
+    }));
+    useSettingsStore.getState().setExplorerShowHiddenFiles(true);
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("save_setting", {
+      key: "explorer_show_hidden_files", value: "true",
+    }));
+  });
+
+  it.each(["false", "true", "unknown"])("loads the saved visibility value %s", async (value) => {
+    invoke.mockImplementation(async (command: string) => command === "load_all_settings"
+      ? [["explorer_show_hidden_files", value], ["editors_seeded", "true"]] : undefined);
+    await useSettingsStore.getState().loadSettings();
+    expect(useSettingsStore.getState().explorerShowHiddenFiles).toBe(value !== "false");
+  });
+
+  it("keeps hidden files visible when upgrading without a saved preference", async () => {
+    invoke.mockImplementation(async (command: string) => command === "load_all_settings"
+      ? [["editors_seeded", "true"]] : undefined);
+    await useSettingsStore.getState().loadSettings();
+    expect(useSettingsStore.getState().explorerShowHiddenFiles).toBe(true);
+  });
+});
+
 describe("settings-store — interface monospace font", () => {
   const DEFAULT_MONO = "'JetBrains Mono', 'Fira Code', ui-monospace, monospace";
 

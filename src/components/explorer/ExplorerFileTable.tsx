@@ -381,6 +381,8 @@ export function ExplorerFileTable({
   const doubleClickAction = useSettingsStore(
     (s) => s.explorerDoubleClickAction,
   );
+  const showHiddenFiles = useSettingsStore((s) => s.explorerShowHiddenFiles);
+  const setShowHiddenFiles = useSettingsStore((s) => s.setExplorerShowHiddenFiles);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ExplorerEntry[] | null>(
@@ -420,7 +422,7 @@ export function ExplorerFileTable({
 
   const sortedEntries = useMemo(
     () =>
-      [...entries].sort((a, b) => {
+      entries.filter((entry) => showHiddenFiles || !entry.name.startsWith(".")).sort((a, b) => {
         const aIsDir = a.entryType === "Directory";
         const bIsDir = b.entryType === "Directory";
         if (aIsDir && !bIsDir) return -1;
@@ -436,12 +438,23 @@ export function ExplorerFileTable({
         }
         return sortAsc ? cmp : -cmp;
       }),
-    [entries, sortBy, sortAsc],
+    [entries, sortBy, sortAsc, showHiddenFiles],
   );
 
   // Keyboard navigation walks this on every arrow keydown — derive it once per
   // sort change instead of rebuilding a fresh array per keypress.
   const sortedIds = useMemo(() => sortedEntries.map((en) => en.id), [sortedEntries]);
+
+  useLayoutEffect(() => {
+    const visibleIds = new Set(sortedIds);
+    setSelectedIds((previous) => {
+      const next = new Set([...previous].filter((id) => visibleIds.has(id)));
+      return next.size === previous.size ? previous : next;
+    });
+    if (lastClickedId.current && !visibleIds.has(lastClickedId.current)) lastClickedId.current = null;
+    setRenamingId((id) => id && !visibleIds.has(id) ? null : id);
+    setContextMenu((menu) => menu?.entry && !visibleIds.has(menu.entry.id) ? null : menu);
+  }, [sortedIds]);
 
   const handleSortClick = (col: "name" | "size" | "modified") => {
     if (sortBy === col) {
@@ -1168,9 +1181,14 @@ export function ExplorerFileTable({
               aria-hidden="true"
             />
             <p className="text-[length:var(--text-sm)] text-text-muted">
-              This folder is empty
+              {!showHiddenFiles && entries.length > 0 ? "No visible items" : "This folder is empty"}
             </p>
             <div className="flex items-center gap-2">
+              {!showHiddenFiles && entries.length > 0 && (
+                <button onClick={() => setShowHiddenFiles(true)} className="px-2.5 py-1 rounded-md text-[length:var(--text-xs)] font-medium text-text-secondary hover:bg-bg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  Show hidden files
+                </button>
+              )}
               {caps.canCreateFile && (
                 <button
                   onClick={() =>

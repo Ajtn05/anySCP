@@ -39,6 +39,15 @@ cache for original files.
 
 ## Thumbnail browsing
 
+**Settings → Explorer → Show hidden files** controls files and folders whose
+names start with a dot, such as `.env` and `.ssh`. The eye button in the explorer
+toolbar changes the same saved preference. It applies across SFTP, SCP, and S3,
+in both list and thumbnail views. Hidden files remain visible by default for
+existing users. Hiding selected items removes them from subsequent selection
+actions and Quick Look navigation. Listings and recursive folder transfers
+retain the underlying contents, and S3 pagination remains available even when
+a loaded page contains only hidden items.
+
 Use the **Thumbnail view** toolbar button for a grid. List view remains the
 default; selection, sorting, rename, menus, uploads, and drag actions are shared
 between both views. JPEG/PNG sources up to 8 MiB, JPEG photos with usable embedded
