@@ -154,6 +154,41 @@ describe("settings-store — hidden files", () => {
   });
 });
 
+describe("settings-store — explorer zoom", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue(undefined);
+    useSettingsStore.setState({ explorerZoom: 100 });
+  });
+
+  it("persists a bounded zoom preference", async () => {
+    useSettingsStore.getState().setExplorerZoom(150);
+    expect(useSettingsStore.getState().explorerZoom).toBe(150);
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("save_setting", {
+      key: "explorer_zoom", value: "150",
+    }));
+    useSettingsStore.getState().setExplorerZoom(1000);
+    expect(useSettingsStore.getState().explorerZoom).toBe(200);
+    useSettingsStore.getState().setExplorerZoom(-10);
+    expect(useSettingsStore.getState().explorerZoom).toBe(75);
+  });
+
+  it.each([["150", 150], ["125", 125], ["148", 150], ["999", 200], ["0", 75],
+    ["invalid", 100], ["Infinity", 100], ["", 100]])("loads and validates saved zoom %s", async (value, expected) => {
+    invoke.mockImplementation(async (command: string) => command === "load_all_settings"
+      ? [["explorer_zoom", value], ["editors_seeded", "true"]] : undefined);
+    await useSettingsStore.getState().loadSettings();
+    expect(useSettingsStore.getState().explorerZoom).toBe(expected);
+  });
+
+  it("uses the existing size when upgrading without a zoom setting", async () => {
+    invoke.mockImplementation(async (command: string) => command === "load_all_settings"
+      ? [["editors_seeded", "true"]] : undefined);
+    await useSettingsStore.getState().loadSettings();
+    expect(useSettingsStore.getState().explorerZoom).toBe(100);
+  });
+});
+
 describe("settings-store — interface monospace font", () => {
   const DEFAULT_MONO = "'JetBrains Mono', 'Fira Code', ui-monospace, monospace";
 

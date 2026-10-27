@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { EXPLORER_ZOOM_DEFAULT, normalizeExplorerZoom } from "../lib/explorer-zoom";
 
 export type CursorStyle = "block" | "bar" | "underline";
 export type ThemeMode = "dark" | "light";
@@ -50,6 +51,7 @@ interface SettingsState {
   // Explorer
   explorerDoubleClickAction: DoubleClickAction;
   explorerShowHiddenFiles: boolean;
+  explorerZoom: number;
 
   // Transfers
   transferConcurrency: number;
@@ -79,6 +81,7 @@ interface SettingsState {
   setTerminalPasteButton: (button: PasteButton) => void;
   setExplorerDoubleClickAction: (action: DoubleClickAction) => void;
   setExplorerShowHiddenFiles: (enabled: boolean) => void;
+  setExplorerZoom: (zoom: number) => void;
   setTransferConcurrency: (n: number) => void;
   addEditor: (editor: Omit<EditorConfig, "id">) => void;
   updateEditor: (id: string, patch: Partial<Omit<EditorConfig, "id">>) => void;
@@ -106,6 +109,7 @@ const DEFAULTS = {
   terminalPasteButton: "none" as PasteButton,
   explorerDoubleClickAction: "download" as DoubleClickAction,
   explorerShowHiddenFiles: true,
+  explorerZoom: EXPLORER_ZOOM_DEFAULT,
   transferConcurrency: 3,
   editors: [] as EditorConfig[],
   defaultEditorId: null as string | null,
@@ -309,6 +313,12 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     persist("explorer_show_hidden_files", String(enabled));
   },
 
+  setExplorerZoom: (zoom) => {
+    const normalized = normalizeExplorerZoom(zoom);
+    set({ explorerZoom: normalized });
+    persist("explorer_zoom", String(normalized));
+  },
+
   setTerminalPasteButton: (button) => {
     set({ terminalPasteButton: button });
     persist("terminal_paste_button", button);
@@ -382,6 +392,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
           case "terminal_paste_button": updates.terminalPasteButton = value === "right" || value === "middle" ? value : DEFAULTS.terminalPasteButton; break;
           case "explorer_double_click_action": updates.explorerDoubleClickAction = value === "open" ? "open" : "download"; break;
           case "explorer_show_hidden_files": updates.explorerShowHiddenFiles = value !== "false"; break;
+          case "explorer_zoom": updates.explorerZoom = normalizeExplorerZoom(value.trim() ? Number(value) : NaN); break;
           case "transfer_concurrency": updates.transferConcurrency = Number(value) || DEFAULTS.transferConcurrency; break;
           case "app_interface_font": updates.interfaceFont = value || DEFAULTS.interfaceFont; break;
           case "app_interface_mono_font": updates.interfaceMonoFont = value || DEFAULTS.interfaceMonoFont; break;

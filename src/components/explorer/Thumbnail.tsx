@@ -24,9 +24,10 @@ function observe(node: Element, callback: (visible: boolean) => void) {
   };
 }
 
-export function Thumbnail({ entry, adapter, active, paused, fallback }: {
+export function Thumbnail({ entry, adapter, active, paused, fallback, height = 96 }: {
   entry: ExplorerEntry; adapter: NonNullable<PreviewAdapter["thumbnails"]>;
   active: boolean; paused: boolean; fallback: ReactNode;
+  height?: number;
 }) {
   const node = useRef<HTMLSpanElement>(null);
   const [visible, setVisible] = useState(false);
@@ -64,7 +65,7 @@ export function Thumbnail({ entry, adapter, active, paused, fallback }: {
     setUrl(objectUrl);
     return () => URL.revokeObjectURL(objectUrl);
   }, [data]);
-  return <span ref={node} className="flex items-center justify-center w-full h-24 shrink-0" title={failed ? "Thumbnail unavailable. Use Quick Look or Download." : undefined}>
+  return <span ref={node} className="flex items-center justify-center w-full shrink-0" style={{ height }} title={failed ? "Thumbnail unavailable. Use Quick Look or Download." : undefined}>
     {url ? <img src={url} alt="" draggable={false} onError={() => { setData(null); setFailed(true); }} className="max-w-full max-h-full object-contain pointer-events-none" /> : fallback}
   </span>;
 }

@@ -81,6 +81,7 @@ AnySCP is a free, open-source desktop application that combines an SSH terminal,
 - Multi-select files with Ctrl+Click and Shift+Click for bulk operations
 - Cut, copy, and paste files between remote directories
 - Inline file and folder creation
+- Finder-style explorer zoom (75–200%) with a size slider and Cmd/Ctrl + `+`, `-`, or `0` shortcuts; remembers your preferred size
 - Edit remote files in VS Code -- automatically re-uploads when you save
 - Transfer queue with real-time progress bars, transfer speed, and ETA
 - Concurrent file transfers with configurable parallelism

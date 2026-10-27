@@ -476,6 +476,7 @@ export function S3Browser({ sessionId, isActive = true }: S3BrowserProps) {
 
       <ExplorerFileTable
         provider={provider}
+        isActive={isActive}
         entries={explorerEntries}
         sortBy={session.sortBy}
         sortAsc={session.sortAsc}

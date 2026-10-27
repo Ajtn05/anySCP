@@ -834,6 +834,7 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
 
       <ExplorerFileTable
         provider={provider}
+        isActive={isActive && !preview}
         viewMode={viewMode}
         thumbnailsActive={isActive && !preview}
         thumbnailsPaused={transferBusy || clearingThumbnails || busy}

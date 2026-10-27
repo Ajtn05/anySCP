@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Thumbnail } from "./Thumbnail";
 import type { ExplorerEntry } from "../../types/explorer";
@@ -17,7 +17,7 @@ beforeEach(() => {
   create = vi.fn(() => "blob:thumbnail"); revoke = vi.fn();
   vi.stubGlobal("URL", { createObjectURL: create, revokeObjectURL: revoke });
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 function visibility(visible: boolean) {
   act(() => { for (const [target, callback] of observed) callback([{ target, isIntersecting: visible } as IntersectionObserverEntry], {} as IntersectionObserver); });
 }
@@ -27,6 +27,21 @@ function setup() {
   return { adapter, component };
 }
 describe("visible thumbnail loading", () => {
+  it("resizes an existing thumbnail without reloading or revoking it", async () => {
+    const { adapter } = setup();
+    const component = (height: number) => <div data-explorer-scroll><Thumbnail entry={entry} adapter={adapter}
+      active paused={false} height={height} fallback={<span>File icon</span>} /></div>;
+    const view = render(component(96));
+    visibility(true);
+    await waitFor(() => expect(create).toHaveBeenCalledOnce());
+    const img = view.container.querySelector("img")!;
+    view.rerender(component(192));
+    expect(view.container.querySelector("img")).toBe(img);
+    expect(img.parentElement).toHaveStyle({ height: "192px" });
+    expect(adapter.load).toHaveBeenCalledOnce();
+    expect(revoke).not.toHaveBeenCalled();
+    expect(signals[0].aborted).toBe(false);
+  });
   it("does no I/O until visible, then releases decoded images offscreen", async () => {
     const { adapter, component } = setup(); render(component());
     expect(adapter.load).not.toHaveBeenCalled(); visibility(true);
