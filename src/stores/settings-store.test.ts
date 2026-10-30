@@ -1,5 +1,32 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useSettingsStore } from "./settings-store";
+
+describe("settings-store — server browser preferences", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue(undefined);
+    useSettingsStore.setState({ serverBrowsers: {} });
+    vi.stubGlobal("__TAURI_INTERNALS__", { invoke: (cmd: string, args: unknown) => invoke(cmd, args) });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("persists per-server layouts and pins and restores them after restart", async () => {
+    const store = useSettingsStore.getState();
+    store.setServerBrowserLayout("host:one", "drive");
+    store.pinServerPath("host:one", "/srv/app/", "Application");
+    store.pinServerPath("host:one", "/srv/app/.", "Renamed");
+    store.pinServerPath("host:two", "/var/log");
+    store.unpinServerPath("host:two", "/var/log");
+    const saved = useSettingsStore.getState().serverBrowsers;
+    expect(saved["host:one"]).toEqual({ layout: "drive", pinnedPaths: [{ path: "/srv/app", label: "Renamed" }] });
+    expect(saved["host:two"]).toEqual({ layout: "classic", pinnedPaths: [] });
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("save_setting", { key: "server_browsers", value: JSON.stringify(saved) }));
+    useSettingsStore.setState({ serverBrowsers: {} });
+    invoke.mockImplementation(async (cmd: string) => cmd === "load_all_settings" ? [["server_browsers", JSON.stringify(saved)], ["editors_seeded", "true"]] : undefined);
+    await useSettingsStore.getState().loadSettings();
+    expect(useSettingsStore.getState().serverBrowsers).toEqual(saved);
+  });
+});
 
 // The store reaches the backend via a dynamic `import("@tauri-apps/api/core")`,
 // so we mock that module's `invoke` (persist is fire-and-forget, hence waitFor).

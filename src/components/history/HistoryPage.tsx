@@ -11,6 +11,7 @@ import { ConfirmDangerDialog } from "../shared/ConfirmDangerDialog";
 import type { ContextMenuItem } from "../shared/ContextMenu";
 import type { ConnectionHistoryEntry } from "../../types";
 import { parseSqliteUtc } from "../../utils/time";
+import { serverBrowserKey } from "../../lib/server-browser";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -152,7 +153,9 @@ export function HistoryPage() {
         }
       }
 
-      useSftpStore.getState().openSession(explorerSessionId, sessionId, label, entry.username);
+      const host = useHostsStore.getState().hosts.find((item) => item.id === entry.host_id);
+      useSftpStore.getState().openSession(explorerSessionId, sessionId, label, entry.username, false, host?.start_directory ?? undefined,
+        serverBrowserKey({ ...entry, id: entry.host_id }));
       useTabStore.getState().addTab({ type: "sftp", id: explorerSessionId, label, transport });
     } catch {
       // Errors surface via SFTP page

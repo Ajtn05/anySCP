@@ -14,6 +14,8 @@ import {
   Eraser,
   Eye,
   EyeOff,
+  Pin,
+  PinOff,
 } from "lucide-react";
 import type { FileSystemProvider } from "../../types/explorer";
 import { useSettingsStore } from "../../stores/settings-store";
@@ -47,6 +49,8 @@ interface ExplorerToolbarProps {
   onViewModeChange?: (mode: "list" | "grid") => void;
   onClearThumbnails?: () => void;
   thumbnailCacheBusy?: boolean;
+  onTogglePin?: () => void;
+  pathPinned?: boolean;
 }
 
 // cache icons so they render once
@@ -114,6 +118,8 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
   onViewModeChange,
   onClearThumbnails,
   thumbnailCacheBusy,
+  onTogglePin,
+  pathPinned,
 }: ExplorerToolbarProps) {
   const caps = provider.capabilities;
   const providerType = provider.type;
@@ -263,6 +269,11 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
       )}
 
       {/* Busy spinner */}
+      {onTogglePin && <button className={ICON_BTN_CLASS} onClick={onTogglePin} disabled={loading}
+        aria-label={pathPinned ? "Unpin current folder" : "Pin current folder"} aria-pressed={!!pathPinned}
+        title={pathPinned ? "Unpin current folder" : "Pin current folder"}>
+        {pathPinned ? <PinOff size={15} className="text-accent" aria-hidden="true" /> : <Pin size={15} aria-hidden="true" />}
+      </button>}
       {busy && (
         <Loader2
           size={15}

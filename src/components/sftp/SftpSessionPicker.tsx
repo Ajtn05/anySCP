@@ -2,6 +2,8 @@ import { useState } from "react";
 import { TerminalSquare, FolderOpen, Loader2 } from "lucide-react";
 import { useSessionStore } from "../../stores/session-store";
 import { useSftpStore } from "../../stores/sftp-store";
+import { useHostsStore } from "../../stores/hosts-store";
+import { serverBrowserKey } from "../../lib/server-browser";
 
 export function SftpSessionPicker() {
   const sessions = useSessionStore((s) => s.sessions);
@@ -21,7 +23,11 @@ export function SftpSessionPicker() {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const sftpSessionId = await invoke<string>("sftp_open", { sessionId: sshSessionId });
-      openSession(sftpSessionId, sshSessionId, label, username);
+      const config = useSessionStore.getState().sessions.get(sshSessionId)?.hostConfig;
+      const host = config && useHostsStore.getState().hosts.find((item) =>
+        item.host === config.host && item.port === config.port && item.username === config.username);
+      openSession(sftpSessionId, sshSessionId, label, username, false, host?.start_directory ?? undefined,
+        config ? serverBrowserKey(host || config) : undefined);
     } catch (err: unknown) {
       const msg =
         err && typeof err === "object" && "message" in err

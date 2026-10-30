@@ -42,6 +42,7 @@ import { ConnectionDialog } from "./ConnectionDialog";
 import { RecentConnections } from "./RecentConnections";
 import { toast } from "../../stores/toast-store";
 import { duplicateS3Connection } from "../../lib/duplicate";
+import { serverBrowserKey } from "../../lib/server-browser";
 
 // Abort an in-flight SSH connection attempt on the Rust side. Best-effort:
 // the attempt may already have settled, in which case the backend reports it
@@ -335,7 +336,7 @@ export function HostsDashboard() {
           return;
         }
 
-        useSftpStore.getState().openSession(explorerSessionId, sessionId, label, host.username, false, host.start_directory ?? undefined);
+        useSftpStore.getState().openSession(explorerSessionId, sessionId, label, host.username, false, host.start_directory ?? undefined, serverBrowserKey(host));
 
         setConnectingHost(null);
         useTabStore.getState().addTab({ type: "sftp", id: explorerSessionId, label, transport });

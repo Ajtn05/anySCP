@@ -4,6 +4,7 @@ import { S3Browser } from "../s3/S3Browser";
 import { useSftpStore } from "../../stores/sftp-store";
 import { useS3Store } from "../../stores/s3-store";
 import type { Transport } from "../../lib/explorer-transport";
+import { ServerBrowserLayoutToggle } from "./ServerDrive";
 
 interface ExplorerPageProps {
   /** SFTP/SCP transport session id (both live in the sftp store). */
@@ -36,6 +37,7 @@ export function ExplorerPage({ sftpSessionId, transport = "sftp", s3SessionId, i
           <span className="text-[11px] font-mono truncate flex-1 min-w-0 text-text-primary leading-none" title={label}>
             {label}
           </span>
+          {sftpSession && <ServerBrowserLayoutToggle serverKey={sftpSession.serverKey} />}
         </div>
 
         {/* Browser content */}

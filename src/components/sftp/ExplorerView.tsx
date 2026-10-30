@@ -16,6 +16,8 @@ import { toast } from "../../stores/toast-store";
 import { useSettingsStore, type EditorConfig } from "../../stores/settings-store";
 import { QuickLook } from "../explorer/QuickLook";
 import { useTransferStore } from "../../stores/transfer-store";
+import { DEFAULT_SERVER_BROWSER } from "../../lib/server-browser";
+import { ServerDrive } from "./ServerDrive";
 
 interface ExplorerViewProps {
   /** The transport session id (sftp_session_id or scp_session_id). */
@@ -50,7 +52,17 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
   const [preview, setPreview] = useState<{ entry: ExplorerEntry; entries: ExplorerEntry[] } | null>(null);
   const closePreview = useCallback(() => setPreview(null), []);
   const showHiddenFiles = useSettingsStore((s) => s.explorerShowHiddenFiles);
+  const serverPrefs = useSettingsStore((s) => s.serverBrowsers[session?.serverKey ?? ""] ?? DEFAULT_SERVER_BROWSER);
+  const driveLayout = serverPrefs.layout === "drive";
+  const [serverHome, setServerHome] = useState(true);
+  const navigationIntent = useRef(0);
+  const isBrowsing = !driveLayout || !serverHome;
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
+  useEffect(() => {
+    navigationIntent.current += 1;
+    setServerHome(true);
+    if (driveLayout) setViewMode("grid");
+  }, [driveLayout, sessionId]);
   const [thumbnailRevision, setThumbnailRevision] = useState(0);
   const [clearingThumbnails, setClearingThumbnails] = useState(false);
   const transferBusy = useTransferStore((state) => {
@@ -66,7 +78,7 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
     finally { setThumbnailRevision((n) => n + 1); setClearingThumbnails(false); }
   }, [provider]);
   useEffect(() => () => { void provider.preview?.thumbnails?.clear().catch(() => {}); }, [provider]);
-  useEffect(() => { setPreview(null); }, [sessionId, transport, session?.currentPath, isActive, showHiddenFiles]);
+  useEffect(() => { setPreview(null); }, [sessionId, transport, session?.currentPath, isActive, isBrowsing, showHiddenFiles]);
 
   // ─── Drag-and-drop (OS → App) ─────────────────────────────────────────────
 
@@ -143,7 +155,7 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
     // Explorer tabs stay mounted (issue #17), so without this guard every open
     // explorer's window-level listener would fire on a single drop and upload
     // the files into every session at once. Only the visible tab listens.
-    if (!isActive) return;
+    if (!isActive || !isBrowsing) return;
 
     let aborted = false;
     let unlisten: (() => void) | undefined;
@@ -228,7 +240,7 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
 
     return () => { aborted = true; unlisten?.(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, transport, isActive, resolveDropDir, uploadDropped]);
+  }, [sessionId, transport, isActive, isBrowsing, resolveDropDir, uploadDropped]);
 
   // ─── Auto-refresh on upload completion ────────────────────────────────────
 
@@ -284,12 +296,45 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
         }
         const entries = await explorerInvoke<SftpEntry[]>(transport, "list_dir", sessionId, { path });
         setEntries(sessionId, path, entries);
+        return true;
       } catch (err: unknown) {
         setError(sessionId, errorMessage(err, "Failed to list directory"));
+        return false;
       }
     },
     [sessionId, transport, provider, setLoading, setEntries, setError],
   );
+
+  const openPinnedPath = useCallback((path: string) => {
+    const intent = ++navigationIntent.current;
+    void loadDirectory(path).then((success) => {
+      if (success && intent === navigationIntent.current) setServerHome(false);
+    });
+  }, [loadDirectory]);
+
+  const openHomeDirectory = useCallback(async () => {
+    const intent = ++navigationIntent.current;
+    setLoading(sessionId, true);
+    try {
+      const home = await explorerInvoke<string>(transport, "home_dir", sessionId);
+      if (!home) throw new Error("The server did not return a home directory.");
+      if (await loadDirectory(home) && intent === navigationIntent.current) setServerHome(false);
+    } catch (err) {
+      setError(sessionId, errorMessage(err, "Could not open the home directory"));
+    }
+  }, [sessionId, transport, loadDirectory, setLoading, setError]);
+
+  const validatePinPath = useCallback(async (raw: string) => {
+    let path = raw.trim();
+    if (path === "~" || path.startsWith("~/")) {
+      const home = await explorerInvoke<string>(transport, "home_dir", sessionId);
+      if (!home) throw new Error("The server did not return a home directory. Enter an absolute path instead.");
+      path = `${home.replace(/\/+$/, "")}/${path.slice(2)}`;
+    }
+    path = normalizeMovePath(path);
+    await explorerInvoke<SftpEntry[]>(transport, "list_dir", sessionId, { path });
+    return path;
+  }, [sessionId, transport]);
 
   // ─── Sudo toggle (SFTP only) ──────────────────────────────────────────────
 
@@ -338,6 +383,7 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
   // remount), otherwise land in the host's configured start directory and
   // fall back to the server home dir, then root.
   useEffect(() => {
+    setLoading(sessionId, true);
     (async () => {
       const sessionState = useSftpStore.getState().sessions.get(sessionId);
       const preserved = sessionState?.currentPath;
@@ -572,7 +618,7 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
     // Only the active (visible) explorer should react to the document-level
     // new-folder/new-file events, otherwise every mounted explorer would open
     // an inline create input at once (issue #17 keeps them all mounted).
-    if (!isActive) return;
+    if (!isActive || !isBrowsing) return;
     const folderHandler = () => setCreatingFolder(true);
     const fileHandler = () => setCreatingFile(true);
     document.addEventListener("sftp:new-folder", folderHandler);
@@ -585,7 +631,7 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
       document.removeEventListener("explorer:new-folder", folderHandler);
       document.removeEventListener("explorer:new-file", fileHandler);
     };
-  }, [isActive]);
+  }, [isActive, isBrowsing]);
 
   const handleCreateFile = useCallback(
     async (name: string) => {
@@ -824,8 +870,7 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
 
   if (!session) return null;
 
-  return (
-    <div className="flex flex-col h-full overflow-hidden relative">
+  const fileBrowser = <>
       <ExplorerToolbar
         provider={provider}
         currentPath={session.currentPath}
@@ -846,24 +891,19 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
         onViewModeChange={setViewMode}
         onClearThumbnails={() => void clearThumbnails()}
         thumbnailCacheBusy={clearingThumbnails}
+        pathPinned={serverPrefs.pinnedPaths.some((pin) => pin.path === session.currentPath)}
+        onTogglePin={driveLayout && !session.error ? () => {
+          const settings = useSettingsStore.getState();
+          if (serverPrefs.pinnedPaths.some((pin) => pin.path === session.currentPath)) settings.unpinServerPath(session.serverKey, session.currentPath);
+          else settings.pinServerPath(session.serverKey, session.currentPath);
+        } : undefined}
       />
-
-      {/* Error banner */}
-      {session.error && (
-        <div
-          data-testid="explorer-error"
-          className="flex items-center gap-2.5 px-4 py-2.5 bg-status-error/10 border-b border-status-error/20 text-status-error"
-        >
-          <AlertCircle size={15} strokeWidth={2} aria-hidden="true" className="shrink-0" />
-          <p className="text-[length:var(--text-sm)]">{session.error}</p>
-        </div>
-      )}
 
       <ExplorerFileTable
         provider={provider}
-        isActive={isActive && !preview}
+        isActive={isActive && isBrowsing && !preview}
         viewMode={viewMode}
-        thumbnailsActive={isActive && !preview}
+        thumbnailsActive={isActive && isBrowsing && !preview}
         thumbnailsPaused={transferBusy || clearingThumbnails || busy}
         thumbnailRevision={thumbnailRevision}
         entries={explorerEntries}
@@ -898,14 +938,31 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
         loading={session.loading}
         busy={busy}
       />
+    </>;
 
-      {preview && isActive && provider.preview && (
+  return (
+    <div className="flex flex-col h-full overflow-hidden relative">
+      {session.error && (
+        <div role="alert" data-testid="explorer-error" className="flex items-center gap-2.5 px-4 py-2.5 bg-status-error/10 border-b border-status-error/20 text-status-error shrink-0">
+          <AlertCircle size={15} strokeWidth={2} aria-hidden="true" className="shrink-0" />
+          <p className="text-[length:var(--text-sm)]">{session.error}</p>
+        </div>
+      )}
+      {driveLayout ? <ServerDrive
+        serverKey={session.serverKey} label={session.label} username={session.username}
+        currentPath={session.currentPath} home={serverHome} loading={session.loading} isActive={isActive}
+        onHome={() => { navigationIntent.current += 1; setServerHome(true); setError(sessionId, null); }}
+        onBrowse={() => { navigationIntent.current += 1; setServerHome(false); }} onNavigate={openPinnedPath}
+        onOpenHome={() => void openHomeDirectory()} onValidatePath={validatePinPath}
+      >{fileBrowser}</ServerDrive> : fileBrowser}
+
+      {preview && isActive && isBrowsing && provider.preview && (
         <QuickLook adapter={provider.preview} entry={preview.entry} entries={preview.entries}
           transfersBusy={transferBusy}
           onChange={(entry) => setPreview((current) => current ? { ...current, entry } : null)}
           onClose={closePreview} onDownload={(entry) => void handleDownload(entry)} />
       )}
-      {isDragOver && (
+      {isDragOver && isActive && isBrowsing && (
         <ExplorerDropZone
           path={dropTargetDir ?? session.currentPath}
           intoFolder={!!dropTargetDir && dropTargetDir !== session.currentPath}

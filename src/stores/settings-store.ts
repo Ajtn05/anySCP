@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import { EXPLORER_ZOOM_DEFAULT, normalizeExplorerZoom } from "../lib/explorer-zoom";
+import { DEFAULT_SERVER_BROWSER, parseServerBrowsers, serverPathLabel, type ServerBrowserLayout, type ServerBrowserPreferences } from "../lib/server-browser";
+import { normalizeMovePath } from "../lib/explorer-move";
 
 export type CursorStyle = "block" | "bar" | "underline";
 export type ThemeMode = "dark" | "light";
@@ -52,6 +54,7 @@ interface SettingsState {
   explorerDoubleClickAction: DoubleClickAction;
   explorerShowHiddenFiles: boolean;
   explorerZoom: number;
+  serverBrowsers: Record<string, ServerBrowserPreferences>;
 
   // Transfers
   transferConcurrency: number;
@@ -82,6 +85,9 @@ interface SettingsState {
   setExplorerDoubleClickAction: (action: DoubleClickAction) => void;
   setExplorerShowHiddenFiles: (enabled: boolean) => void;
   setExplorerZoom: (zoom: number) => void;
+  setServerBrowserLayout: (serverKey: string, layout: ServerBrowserLayout) => void;
+  pinServerPath: (serverKey: string, path: string, label?: string) => void;
+  unpinServerPath: (serverKey: string, path: string) => void;
   setTransferConcurrency: (n: number) => void;
   addEditor: (editor: Omit<EditorConfig, "id">) => void;
   updateEditor: (id: string, patch: Partial<Omit<EditorConfig, "id">>) => void;
@@ -110,6 +116,7 @@ const DEFAULTS = {
   explorerDoubleClickAction: "download" as DoubleClickAction,
   explorerShowHiddenFiles: true,
   explorerZoom: EXPLORER_ZOOM_DEFAULT,
+  serverBrowsers: {} as Record<string, ServerBrowserPreferences>,
   transferConcurrency: 3,
   editors: [] as EditorConfig[],
   defaultEditorId: null as string | null,
@@ -319,6 +326,33 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     persist("explorer_zoom", String(normalized));
   },
 
+  setServerBrowserLayout: (serverKey, layout) => set((state) => {
+    const current = state.serverBrowsers[serverKey] ?? DEFAULT_SERVER_BROWSER;
+    const serverBrowsers = { ...state.serverBrowsers, [serverKey]: { ...current, layout } };
+    persist("server_browsers", JSON.stringify(serverBrowsers));
+    return { serverBrowsers };
+  }),
+
+  pinServerPath: (serverKey, rawPath, label) => set((state) => {
+    const path = normalizeMovePath(rawPath);
+    const current = state.serverBrowsers[serverKey] ?? DEFAULT_SERVER_BROWSER;
+    const pin = { path, label: label?.trim() || serverPathLabel(path) };
+    const pinnedPaths = current.pinnedPaths.some((item) => item.path === path)
+      ? current.pinnedPaths.map((item) => item.path === path ? pin : item)
+      : [...current.pinnedPaths, pin];
+    const serverBrowsers = { ...state.serverBrowsers, [serverKey]: { ...current, pinnedPaths } };
+    persist("server_browsers", JSON.stringify(serverBrowsers));
+    return { serverBrowsers };
+  }),
+
+  unpinServerPath: (serverKey, path) => set((state) => {
+    const current = state.serverBrowsers[serverKey] ?? DEFAULT_SERVER_BROWSER;
+    const pinnedPaths = current.pinnedPaths.filter((item) => item.path !== path);
+    const serverBrowsers = { ...state.serverBrowsers, [serverKey]: { ...current, pinnedPaths } };
+    persist("server_browsers", JSON.stringify(serverBrowsers));
+    return { serverBrowsers };
+  }),
+
   setTerminalPasteButton: (button) => {
     set({ terminalPasteButton: button });
     persist("terminal_paste_button", button);
@@ -393,6 +427,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
           case "explorer_double_click_action": updates.explorerDoubleClickAction = value === "open" ? "open" : "download"; break;
           case "explorer_show_hidden_files": updates.explorerShowHiddenFiles = value !== "false"; break;
           case "explorer_zoom": updates.explorerZoom = normalizeExplorerZoom(value.trim() ? Number(value) : NaN); break;
+          case "server_browsers": updates.serverBrowsers = parseServerBrowsers(value); break;
           case "transfer_concurrency": updates.transferConcurrency = Number(value) || DEFAULTS.transferConcurrency; break;
           case "app_interface_font": updates.interfaceFont = value || DEFAULTS.interfaceFont; break;
           case "app_interface_mono_font": updates.interfaceMonoFont = value || DEFAULTS.interfaceMonoFont; break;

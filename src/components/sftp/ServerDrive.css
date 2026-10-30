@@ -1,0 +1,45 @@
+.server-drive-container { container-type: inline-size; }
+.server-drive-layout { display: flex; height: 100%; min-height: 0; }
+.server-drive-nav { width: 188px; flex-shrink: 0; padding: 20px 10px; overflow-y: auto; background: var(--color-bg-surface); border-right: 1px solid var(--color-border); }
+.server-drive-identity { display: flex; align-items: center; gap: 10px; padding: 0 12px 22px; }
+.server-drive-primary-nav { display: flex; flex-direction: column; gap: 4px; }
+.server-drive-nav-link { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 12px; border-radius: 7px; font-size: 13px; color: var(--color-text-secondary); text-align: left; }
+.server-drive-nav-link svg { flex-shrink: 0; }
+.server-drive-nav-link:hover { background: var(--color-bg-subtle); color: var(--color-text-primary); }
+.server-drive-nav-link[aria-current] { background: var(--color-accent-muted); color: var(--color-accent); }
+.server-drive-home { flex: 1; min-width: 0; overflow-y: auto; padding: 30px; }
+.server-drive-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.server-drive-shortcuts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 28px; }
+.server-drive-shortcut { display: flex; align-items: center; gap: 10px; padding: 16px; border-radius: 9px; border: 1px solid var(--color-border); background: var(--color-bg-surface); text-align: left; font-size: 13px; }
+.server-drive-shortcut:hover { border-color: var(--color-accent); background: var(--color-bg-overlay); }
+.server-drive-shortcut svg { flex-shrink: 0; }
+.server-drive-pins-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.server-drive-search { display: flex; align-items: center; gap: 8px; width: 240px; max-width: 100%; border: 1px solid var(--color-border); border-radius: 7px; padding: 7px 10px; background: var(--color-bg-surface); }
+.server-drive-search:focus-within { border-color: var(--color-accent); }
+.server-drive-search input { width: 100%; min-width: 0; font-size: 12px; outline: none; }
+.server-drive-pin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 210px), 1fr)); gap: 12px; }
+.server-drive-pin-card { position: relative; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-bg-surface); overflow: hidden; }
+.server-drive-pin-card:focus-within, .server-drive-pin-card:hover { border-color: var(--color-accent); }
+.server-drive-pin-open { display: block; width: 100%; padding: 18px; text-align: left; }
+.server-drive-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 5px; color: var(--color-text-muted); flex-shrink: 0; }
+.server-drive-icon-button:hover { color: var(--color-text-primary); background: var(--color-bg-subtle); }
+.server-drive-unpin { position: absolute; right: 10px; top: 10px; }
+.server-drive-empty { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 40px 24px; border: 1px dashed var(--color-border); border-radius: 10px; }
+.server-drive-input { width: 100%; border: 1px solid var(--color-border); border-radius: 7px; padding: 8px 10px; background: var(--color-bg-base); font-size: 13px; outline: none; }
+.server-drive-input:focus { border-color: var(--color-accent); box-shadow: 0 0 0 2px var(--color-ring); }
+.server-drive-container button:disabled { opacity: .5; cursor: not-allowed; }
+.server-drive-container button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+@container (max-width: 680px) {
+  .server-drive-layout { flex-direction: column; }
+  .server-drive-nav { width: auto; padding: 8px 12px; overflow: visible; border-right: 0; border-bottom: 1px solid var(--color-border); }
+  .server-drive-identity, .server-drive-sidebar-pins { display: none; }
+  .server-drive-primary-nav { flex-direction: row; }
+  .server-drive-nav-link { width: auto; }
+  .server-drive-home { padding: 22px 18px; }
+}
+@container (max-width: 420px) {
+  .server-drive-heading { align-items: flex-start; flex-direction: column; }
+  .server-drive-shortcuts { grid-template-columns: 1fr; gap: 8px; margin-top: 20px; }
+  .server-drive-home { padding: 18px 14px; }
+  .server-drive-search { width: 100%; }
+}

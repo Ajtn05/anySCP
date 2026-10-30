@@ -7,6 +7,8 @@ export interface SftpSession {
   sftpSessionId: string;
   sshSessionId: string;
   label: string;
+  /** Stable identity for this server's saved layout and pinned paths. */
+  serverKey: string;
   username: string;
   sudoMode: boolean;
   currentPath: string;
@@ -27,7 +29,7 @@ interface SftpState {
   activeSftpSessionId: string | null;
   clipboard: SftpClipboard | null;
 
-  openSession: (sftpSessionId: string, sshSessionId: string, label: string, username?: string, sudoMode?: boolean, startDirectory?: string) => void;
+  openSession: (sftpSessionId: string, sshSessionId: string, label: string, username?: string, sudoMode?: boolean, startDirectory?: string, serverKey?: string) => void;
   closeSession: (sftpSessionId: string) => void;
   /** Replace an existing session's ID in-place (used by sudo toggle). */
   swapSession: (oldId: string, newId: string, sudoMode: boolean) => void;
@@ -50,13 +52,14 @@ export const useSftpStore = create<SftpState>((set) => ({
   activeSftpSessionId: null,
   clipboard: null,
 
-  openSession: (sftpSessionId, sshSessionId, label, username, sudoMode, startDirectory) =>
+  openSession: (sftpSessionId, sshSessionId, label, username, sudoMode, startDirectory, serverKey) =>
     set((state) => {
       const next = new Map(state.sessions);
       next.set(sftpSessionId, {
         sftpSessionId,
         sshSessionId,
         label,
+        serverKey: serverKey ?? `session:${sshSessionId}`,
         username: username ?? "",
         sudoMode: sudoMode ?? false,
         currentPath: "/",
