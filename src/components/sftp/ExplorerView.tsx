@@ -11,6 +11,7 @@ import { createSftpProvider, toExplorerEntry } from "../../providers/sftp-provid
 import { explorerInvoke, transferEventName, type Transport } from "../../lib/explorer-transport";
 import { editorLaunchErrorMessage } from "../../lib/editor-errors";
 import { conflictingNames } from "../../lib/drop-conflicts";
+import { moveDestinationError, normalizeMovePath } from "../../lib/explorer-move";
 import { toast } from "../../stores/toast-store";
 import { useSettingsStore, type EditorConfig } from "../../stores/settings-store";
 import { QuickLook } from "../explorer/QuickLook";
@@ -686,6 +687,17 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
   // ─── Paste / Move / Copy ─────────────────────────────────────────────────
 
   const [busy, setBusy] = useState(false);
+  const moveInFlight = useRef(false);
+  const [internalDropTarget, setInternalDropTarget] = useState<string | null>(null);
+
+  const listMoveDirectory = useCallback(async (path: string): Promise<ExplorerEntry[]> => {
+    try {
+      const entries = await explorerInvoke<SftpEntry[]>(transport, "list_dir", sessionId, { path });
+      return entries.map(toExplorerEntry);
+    } catch (err) {
+      throw new Error(errorMessage(err, "Could not open destination folder."));
+    }
+  }, [sessionId, transport]);
 
   const handlePaste = useCallback(async () => {
     const clip = useSftpStore.getState().clipboard;
@@ -711,16 +723,30 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
   }, [sessionId, transport, session, loadDirectory, setError]);
 
   const handleMoveEntries = useCallback(async (sourceIds: string[], targetDir: string) => {
+    if (moveInFlight.current) throw new Error("A move is already in progress.");
+    const destination = normalizeMovePath(targetDir);
+    const sources = (useSftpStore.getState().sessions.get(sessionId)?.entries ?? [])
+      .filter((entry) => sourceIds.includes(entry.path)).map(toExplorerEntry);
+    const invalid = moveDestinationError(sources, destination);
+    if (invalid) throw new Error(invalid);
+
+    moveInFlight.current = true;
     setBusy(true);
     try {
-      await explorerInvoke(transport, "move_entries", sessionId, { sourcePaths: sourceIds, targetDir });
-      if (session) await loadDirectory(session.currentPath);
+      await explorerInvoke(transport, "move_entries", sessionId, { sourcePaths: sourceIds, targetDir: destination });
+      await loadDirectory(currentPathRef.current);
     } catch (err) {
-      setError(sessionId, err instanceof Error ? err.message : "Move failed");
+      // A batch may have moved some entries before failing. Refresh those out
+      // of the listing before reporting the original error.
+      await loadDirectory(currentPathRef.current);
+      const message = errorMessage(err, "Move failed");
+      setError(sessionId, message);
+      throw new Error(message);
     } finally {
+      moveInFlight.current = false;
       setBusy(false);
     }
-  }, [sessionId, transport, session, loadDirectory, setError]);
+  }, [sessionId, transport, loadDirectory, setError]);
 
   const handleCopyEntries = useCallback(async (sourceIds: string[], targetDir: string) => {
     setBusy(true);
@@ -812,6 +838,7 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
         onUpload={() => void handleUpload()}
         onUploadFolder={() => void handleUploadFolder()}
         busy={busy}
+        dropTargetPath={internalDropTarget}
         sudoMode={sudoMode}
         sudoBusy={togglingSudo}
         onToggleSudo={transport === "sftp" && !isRoot ? () => void handleToggleSudo() : undefined}
@@ -863,6 +890,8 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
         onCancelCreateFolder={() => setCreatingFolder(false)}
         onPaste={() => void handlePaste()}
         onMoveEntries={handleMoveEntries}
+        onListDirectory={listMoveDirectory}
+        onDropTargetChange={setInternalDropTarget}
         onCopyEntries={handleCopyEntries}
         onDragOut={transport === "sftp" ? handleDragOut : undefined}
         currentPath={session.currentPath}

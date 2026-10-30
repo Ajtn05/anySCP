@@ -17,7 +17,7 @@ beforeEach(() => {
   create = vi.fn(() => "blob:thumbnail"); revoke = vi.fn();
   vi.stubGlobal("URL", { createObjectURL: create, revokeObjectURL: revoke });
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 function visibility(visible: boolean) {
   act(() => { for (const [target, callback] of observed) callback([{ target, isIntersecting: visible } as IntersectionObserverEntry], {} as IntersectionObserver); });
 }
@@ -27,6 +27,40 @@ function setup() {
   return { adapter, component };
 }
 describe("visible thumbnail loading", () => {
+  it("does not enqueue files that scroll past before visibility settles", async () => {
+    vi.useFakeTimers();
+    const { adapter, component } = setup(); render(component());
+    visibility(true);
+    await act(() => vi.advanceTimersByTimeAsync(80));
+    visibility(false);
+    await act(() => vi.advanceTimersByTimeAsync(200));
+    expect(adapter.load).not.toHaveBeenCalled();
+    visibility(true);
+    await act(() => vi.advanceTimersByTimeAsync(120));
+    expect(adapter.load).toHaveBeenCalledOnce();
+    expect(create).toHaveBeenCalledOnce();
+  });
+  it("shows a cached thumbnail immediately while paused and keeps it on resume", async () => {
+    const { adapter } = setup();
+    const cached = { ...adapter, getCached: vi.fn(() => new ArrayBuffer(8)) };
+    const component = (paused: boolean) => <div data-explorer-scroll><Thumbnail entry={entry} adapter={cached}
+      active paused={paused} fallback={<span>File icon</span>} /></div>;
+    const view = render(component(true)); visibility(true);
+    expect(view.container.querySelector("img")).not.toBeNull();
+    view.rerender(component(false));
+    expect(adapter.load).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledOnce();
+    expect(revoke).not.toHaveBeenCalled();
+  });
+  it("keeps an already displayed thumbnail when transfers pause and resume", async () => {
+    const { adapter, component } = setup(); const view = render(component()); visibility(true);
+    await waitFor(() => expect(create).toHaveBeenCalledOnce());
+    view.rerender(component(true, true));
+    view.rerender(component(true, false));
+    expect(adapter.load).toHaveBeenCalledOnce();
+    expect(create).toHaveBeenCalledOnce();
+    expect(revoke).not.toHaveBeenCalled();
+  });
   it("resizes an existing thumbnail without reloading or revoking it", async () => {
     const { adapter } = setup();
     const component = (height: number) => <div data-explorer-scroll><Thumbnail entry={entry} adapter={adapter}

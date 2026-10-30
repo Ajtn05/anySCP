@@ -1727,6 +1727,8 @@ pub async fn sftp_move_entries(
     target_dir: String,
     sftp_manager: State<'_, Arc<SftpManager>>,
 ) -> Result<Vec<String>, SftpError> {
+    let (source_paths, target_dir) = crate::remote_path::prepare_move(source_paths, target_dir)
+        .map_err(SftpError::RemoteIoError)?;
     let sftp_arc = {
         let session_ref = sftp_manager.get_session(&sftp_session_id)?;
         session_ref.sftp.clone()
@@ -1740,18 +1742,6 @@ pub async fn sftp_move_entries(
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".to_string());
-
-        // Prevent moving a directory into itself
-        let _target_check = if target_dir == "/" {
-            format!("/{name}")
-        } else {
-            format!("{target_dir}/{name}")
-        };
-        if target_dir.starts_with(source) && source.contains('/') {
-            return Err(SftpError::RemoteIoError(format!(
-                "Cannot move {source} into itself"
-            )));
-        }
 
         let deduped = deduplicate_name(&sftp, &target_dir, &name).await;
         let dest = if target_dir == "/" {

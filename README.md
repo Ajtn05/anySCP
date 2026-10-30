@@ -78,6 +78,7 @@ AnySCP is a free, open-source desktop application that combines an SSH terminal,
 
 - Browse, upload, download, rename, move, copy, and delete remote files and directories
 - Drag-and-drop file upload from your desktop directly into the remote file browser
+- Move selected files or folders to an ancestor by dragging onto the path bar, or right-click and choose **Move to…** to browse or type a destination (SFTP and SCP)
 - Multi-select files with Ctrl+Click and Shift+Click for bulk operations
 - Cut, copy, and paste files between remote directories
 - Inline file and folder creation

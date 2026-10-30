@@ -30,6 +30,7 @@ export function Thumbnail({ entry, adapter, active, paused, fallback, height = 9
   height?: number;
 }) {
   const node = useRef<HTMLSpanElement>(null);
+  const loaded = useRef<{ entry: ExplorerEntry; adapter: typeof adapter } | null>(null);
   const [visible, setVisible] = useState(false);
   const [url, setUrl] = useState<string | null>(null);
   const [data, setData] = useState<ArrayBuffer | null>(null);
@@ -41,20 +42,31 @@ export function Thumbnail({ entry, adapter, active, paused, fallback, height = 9
     return observe(node.current, setVisible);
   }, [active, adapter, entry]);
   useEffect(() => {
-    if (!visible || !active) { setData(null); return; }
+    if (!visible || !active) { loaded.current = null; setData(null); return; }
+    if (loaded.current?.entry === entry && loaded.current.adapter === adapter) return;
+    setData(null);
+    const show = (bytes: ArrayBuffer) => {
+      loaded.current = { entry, adapter };
+      setData(bytes);
+    };
+    const cached = adapter.getCached?.(entry);
+    if (cached) { setFailed(false); show(cached); return; }
     if (paused) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     setFailed(false);
-    void adapter.load(entry, controller.signal).then((bytes) => {
-      if (controller.signal.aborted) return;
-      setData(bytes);
-    }, (reason: unknown) => {
-      if (controller.signal.aborted) return;
-      if (reason && typeof reason === "object" && "kind" in reason && reason.kind === "preview_deferred") {
-        timer = setTimeout(() => setRetry((n) => n + 1), 1500);
-      } else if (!(reason instanceof DOMException && reason.name === "AbortError")) setFailed(true);
-    });
+    // Let rapid scrolling settle before adding network work to the shared queue.
+    // Cache hits above remain immediate, including while transfers pause I/O.
+    timer = setTimeout(() => {
+      void adapter.load(entry, controller.signal).then((bytes) => {
+        if (!controller.signal.aborted) show(bytes);
+      }, (reason: unknown) => {
+        if (controller.signal.aborted) return;
+        if (reason && typeof reason === "object" && "kind" in reason && reason.kind === "preview_deferred") {
+          timer = setTimeout(() => setRetry((n) => n + 1), 1500);
+        } else if (!(reason instanceof DOMException && reason.name === "AbortError")) setFailed(true);
+      });
+    }, 120);
     return () => {
       controller.abort(); clearTimeout(timer);
     };

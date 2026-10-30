@@ -1,5 +1,9 @@
 //! Read-only, bounded preview requests. These never enter the transfer queue.
-use std::{io::Cursor, sync::Arc, time::Duration};
+use std::{
+    io::Cursor,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use dashmap::DashMap;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
@@ -12,7 +16,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    jpeg_thumbnail, raw_preview,
+    jpeg_thumbnail, preview_io, raw_preview,
     thumbnail_cache::{CacheKey, ThumbnailCache},
     transfer_manager::TransferManager,
 };
@@ -214,6 +218,7 @@ fn response(kind: Kind, source_size: u64, truncated: bool, bytes: Vec<u8>) -> Ve
 }
 
 #[tauri::command]
+#[tracing::instrument(skip_all, fields(%request_id, sftp_session_id = tracing::field::Empty, thumbnail = tracing::field::Empty))]
 pub async fn sftp_preview_read(
     request_id: String,
     window: Window,
@@ -240,6 +245,9 @@ pub async fn sftp_preview_read(
             request.thumbnail,
         )
     };
+    tracing::Span::current().record("sftp_session_id", &session_id);
+    tracing::Span::current().record("thumbnail", thumbnail);
+    let started = Instant::now();
     let work = async {
         let busy =
             || sftp_manager.has_active_transfers() || transfer_manager.has_active_transfers();
@@ -267,6 +275,7 @@ pub async fn sftp_preview_read(
             };
             permit
         };
+        preview_io::check(&token)?;
         let session = { sftp_manager.get_session(&session_id)?.sftp.clone() };
         if thumbnail {
             let base = app
@@ -289,12 +298,28 @@ pub async fn sftp_preview_read(
             load_preview(session, &path, &token, permit).await
         }
     };
-    let result = tokio::select! {
-        _ = token.cancelled() => Err(SftpError::TransferCancelled),
-        result = tokio::time::timeout(REQUEST_TIMEOUT, work) =>
-            result.unwrap_or_else(|_| Err(error("Preview timed out. Try again or download the file."))),
-    };
+    let result = preview_io::run(
+        &token,
+        REQUEST_TIMEOUT,
+        "Preview timed out. Try again or download the file.",
+        work,
+    )
+    .await;
     manager.requests.remove(&request_id);
+    match &result {
+        Ok(bytes) => tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis(),
+            bytes = bytes.len(),
+            "Preview loaded"
+        ),
+        Err(SftpError::TransferCancelled | SftpError::PreviewDeferred) => tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis(),
+            "Preview stopped"
+        ),
+        Err(error) => {
+            tracing::warn!(elapsed_ms = started.elapsed().as_millis(), %error, "Preview failed")
+        }
+    }
     result.map(tauri::ipc::Response::new)
 }
 
@@ -319,11 +344,13 @@ async fn load_thumbnail(
     let permit = Arc::new(permit);
     let generation = cache.generation(session_id).await;
     let attrs = {
-        let sftp = session.lock().await;
+        let sftp = preview_io::cancel_safe(token, session.lock()).await?;
+        preview_io::check(token)?;
         sftp.metadata(path)
             .await
             .map_err(|e| error(e.to_string()))?
     };
+    preview_io::check(token)?;
     if attrs.file_type() != russh_sftp::protocol::FileType::File
         || attrs
             .size
@@ -349,15 +376,14 @@ async fn load_thumbnail(
         return Err(SftpError::PreviewDeferred);
     }
     let mut file = {
-        session
-            .lock()
-            .await
-            .open(path)
-            .await
-            .map_err(|e| error(e.to_string()))?
+        let sftp = preview_io::cancel_safe(token, session.lock()).await?;
+        preview_io::check(token)?;
+        sftp.open(path).await.map_err(|e| error(e.to_string()))?
     };
     let read = async {
+        preview_io::check(token)?;
         let before = file.metadata().await.map_err(|e| error(e.to_string()))?;
+        preview_io::check(token)?;
         if before.file_type() != russh_sftp::protocol::FileType::File
             || before.size != attrs.size
             || before.mtime != attrs.mtime
@@ -409,7 +435,9 @@ async fn load_thumbnail(
         } else {
             ThumbnailInput::Source(read_thumbnail_source(&mut file, token, &busy).await?, None)
         };
+        preview_io::check(token)?;
         let after = file.metadata().await.map_err(|e| error(e.to_string()))?;
+        preview_io::check(token)?;
         if before.size != after.size
             || before.mtime != after.mtime
             || (!raw && matches!(&input, ThumbnailInput::Source(bytes, _) if bytes.len() as u64 != before.size.unwrap_or(0)))
@@ -420,6 +448,7 @@ async fn load_thumbnail(
     }
     .await;
     let _ = file.shutdown().await;
+    preview_io::check(token)?;
     let input = read?;
     if busy() {
         return Err(SftpError::PreviewDeferred);
@@ -477,16 +506,18 @@ async fn read_thumbnail_remainder<R: AsyncRead + Unpin>(
 ) -> Result<Vec<u8>, SftpError> {
     let mut chunk = vec![0; THUMBNAIL_READ_CHUNK];
     loop {
+        preview_io::check(token)?;
         if busy() {
             return Err(SftpError::PreviewDeferred);
         }
         let want = chunk
             .len()
             .min((THUMBNAIL_SOURCE_LIMIT + 1) as usize - bytes.len());
-        let n = tokio::select! {
-            _ = token.cancelled() => return Err(SftpError::TransferCancelled),
-            result = reader.read(&mut chunk[..want]) => result.map_err(|e| error(e.to_string()))?,
-        };
+        let n = reader
+            .read(&mut chunk[..want])
+            .await
+            .map_err(|e| error(e.to_string()))?;
+        preview_io::check(token)?;
         if n == 0 {
             return Ok(bytes);
         }
@@ -505,19 +536,24 @@ async fn load_preview(
 ) -> Result<Vec<u8>, SftpError> {
     let file_kind = kind(path)?;
     let raw = raw_preview::supports(path);
+    let permit = Arc::new(permit);
     let mut file = {
-        let sftp = session.lock().await;
+        let sftp = preview_io::cancel_safe(token, session.lock()).await?;
+        preview_io::check(token)?;
         let attrs = sftp
             .metadata(path)
             .await
             .map_err(|e| error(e.to_string()))?;
+        preview_io::check(token)?;
         if attrs.file_type() != russh_sftp::protocol::FileType::File {
             return Err(error("Only regular files can be previewed"));
         }
         sftp.open(path).await.map_err(|e| error(e.to_string()))?
     };
     let result = async {
+        preview_io::check(token)?;
         let before = file.metadata().await.map_err(|e| error(e.to_string()))?;
+        preview_io::check(token)?;
         if before.file_type() != russh_sftp::protocol::FileType::File {
             return Err(error("Only regular files can be previewed"));
         }
@@ -540,7 +576,9 @@ async fn load_preview(
         } else {
             (read_bounded(&mut file, limit, token).await?, None)
         };
+        preview_io::check(token)?;
         let after = file.metadata().await.map_err(|e| error(e.to_string()))?;
+        preview_io::check(token)?;
         if before.size != after.size || before.mtime != after.mtime {
             return Err(error(
                 "The file changed while loading. Open the preview again.",
@@ -559,9 +597,10 @@ async fn load_preview(
                 bytes
             }
             Kind::Image => {
+                let decode_permit = permit.clone();
                 return tokio::task::spawn_blocking(move || {
                     // Keep the permit until decoding finishes, even on cancellation.
-                    let _permit = permit;
+                    let _permit = decode_permit;
                     image_preview_oriented(&bytes, 2048, orientation)
                         .map(|bytes| response(file_kind, size, false, bytes))
                 })
@@ -572,9 +611,9 @@ async fn load_preview(
         Ok(response(file_kind, size, truncated, bytes))
     }
     .await;
-    // Explicitly close even on limit/decode errors. The outer deadline also
-    // bounds close; File's Drop remains the last-resort cleanup.
+    // Never cancel CLOSE after sending it. The library bounds its reply wait.
     let _ = file.shutdown().await;
+    preview_io::check(token)?;
     result
 }
 
@@ -584,14 +623,21 @@ async fn read_bounded<R: AsyncRead + Unpin>(
     token: &CancellationToken,
 ) -> Result<Vec<u8>, SftpError> {
     let mut bytes = Vec::new();
-    let mut reader = reader.take(limit + 1);
-    tokio::select! {
-        _ = token.cancelled() => Err(SftpError::TransferCancelled),
-        result = reader.read_to_end(&mut bytes) => {
-            result.map_err(|e| error(e.to_string()))?;
-            Ok(bytes)
+    let mut chunk = vec![0; 256 * 1024];
+    while (bytes.len() as u64) < limit + 1 {
+        preview_io::check(token)?;
+        let want = chunk.len().min((limit + 1 - bytes.len() as u64) as usize);
+        let n = reader
+            .read(&mut chunk[..want])
+            .await
+            .map_err(|e| error(e.to_string()))?;
+        preview_io::check(token)?;
+        if n == 0 {
+            break;
         }
+        bytes.extend_from_slice(&chunk[..n]);
     }
+    Ok(bytes)
 }
 
 fn text(bytes: &[u8], truncated: bool) -> Result<String, SftpError> {
@@ -685,6 +731,30 @@ pub(super) mod tests {
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[derive(Clone)]
+    pub(in crate::sftp) struct TestGate {
+        operation: &'static str,
+        pub(in crate::sftp) started: CancellationToken,
+        pub(in crate::sftp) resume: CancellationToken,
+    }
+
+    impl TestGate {
+        pub(in crate::sftp) fn new(operation: &'static str) -> Self {
+            Self {
+                operation,
+                started: CancellationToken::new(),
+                resume: CancellationToken::new(),
+            }
+        }
+
+        async fn wait(&self, operation: &str) {
+            if operation == self.operation && !self.started.is_cancelled() {
+                self.started.cancel();
+                self.resume.cancelled().await;
+            }
+        }
+    }
+
     struct TestServer {
         bytes: Vec<u8>,
         closed: Arc<AtomicUsize>,
@@ -694,9 +764,16 @@ pub(super) mod tests {
         change_after_read: bool,
         reported_size: Option<u64>,
         mode: u32,
+        gate: Option<TestGate>,
     }
 
     impl TestServer {
+        async fn wait(&self, operation: &str) {
+            if let Some(gate) = &self.gate {
+                gate.wait(operation).await;
+            }
+        }
+
         fn attrs(&self, id: u32) -> Attrs {
             Attrs {
                 id,
@@ -720,9 +797,11 @@ pub(super) mod tests {
             StatusCode::OpUnsupported
         }
         async fn stat(&mut self, id: u32, _path: String) -> Result<Attrs, StatusCode> {
+            self.wait("stat").await;
             Ok(self.attrs(id))
         }
         async fn fstat(&mut self, id: u32, _handle: String) -> Result<Attrs, StatusCode> {
+            self.wait("fstat").await;
             Ok(self.attrs(id))
         }
         async fn open(
@@ -735,6 +814,7 @@ pub(super) mod tests {
             // Any create/write/truncate flag makes the test fail at the wire boundary.
             assert_eq!(flags.bits(), OpenFlags::READ.bits());
             self.opened.fetch_add(1, Ordering::SeqCst);
+            self.wait("open").await;
             Ok(Handle {
                 id,
                 handle: filename,
@@ -748,6 +828,7 @@ pub(super) mod tests {
             len: u32,
         ) -> Result<Data, StatusCode> {
             self.read_requests.fetch_add(1, Ordering::SeqCst);
+            self.wait("read").await;
             if offset >= self.bytes.len() as u64 {
                 return Err(StatusCode::Eof);
             }
@@ -761,6 +842,7 @@ pub(super) mod tests {
         }
         async fn close(&mut self, id: u32, _handle: String) -> Result<Status, StatusCode> {
             self.closed.fetch_add(1, Ordering::SeqCst);
+            self.wait("close").await;
             Ok(Status {
                 id,
                 status_code: StatusCode::Ok,
@@ -799,6 +881,23 @@ pub(super) mod tests {
         mode: u32,
         change_after_read: bool,
     ) -> (TestConnection, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        test_session_stats_with_gate(bytes, reported_size, mode, change_after_read, None).await
+    }
+
+    pub(in crate::sftp) async fn test_session_gated(
+        bytes: Vec<u8>,
+        gate: TestGate,
+    ) -> (TestConnection, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        test_session_stats_with_gate(bytes, None, 0o100644, false, Some(gate)).await
+    }
+
+    async fn test_session_stats_with_gate(
+        bytes: Vec<u8>,
+        reported_size: Option<u64>,
+        mode: u32,
+        change_after_read: bool,
+        gate: Option<TestGate>,
+    ) -> (TestConnection, Arc<AtomicUsize>, Arc<AtomicUsize>) {
         let (client, server) = tokio::io::duplex(1024 * 1024);
         let closed = Arc::new(AtomicUsize::new(0));
         let opened = Arc::new(AtomicUsize::new(0));
@@ -815,6 +914,7 @@ pub(super) mod tests {
                 bytes_read: bytes_read.clone(),
                 read_requests: read_requests.clone(),
                 change_after_read,
+                gate,
             },
         ));
         let session = russh_sftp::client::SftpSession::new(client).await.unwrap();
@@ -827,6 +927,97 @@ pub(super) mod tests {
 
     async fn permit() -> tokio::sync::OwnedSemaphorePermit {
         Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap()
+    }
+
+    pub(in crate::sftp) struct ReplyWarnings(pub(in crate::sftp) Arc<AtomicUsize>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ReplyWarnings {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _context: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if event.metadata().target() == "russh_sftp::client"
+                && *event.metadata().level() == tracing::Level::WARN
+            {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_previews_drain_replies_close_handles_and_keep_the_worker_until_cleanup() {
+        use tracing_subscriber::prelude::*;
+        let warnings = Arc::new(AtomicUsize::new(0));
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(ReplyWarnings(warnings.clone())),
+        );
+        let source = encoded_jpeg(80, 40);
+        for thumbnail in [true, false] {
+            for operation in ["stat", "open", "fstat", "read", "close"] {
+                let gate = TestGate::new(operation);
+                let ((session, closed, opened), _, reads) =
+                    test_session_gated(source.clone(), gate.clone()).await;
+                let worker = Arc::new(Semaphore::new(1));
+                let token = CancellationToken::new();
+                let directory = tempfile::tempdir().unwrap();
+                let cache = ThumbnailCache::new();
+                let work = async {
+                    let permit = worker.clone().acquire_owned().await.unwrap();
+                    if thumbnail {
+                        load_thumbnail(
+                            session.clone(),
+                            "cancel",
+                            "/image.jpg",
+                            &token,
+                            permit,
+                            &cache,
+                            directory.path(),
+                            || false,
+                        )
+                        .await
+                    } else {
+                        load_preview(session.clone(), "/image.jpg", &token, permit).await
+                    }
+                };
+                let cancel = async {
+                    gate.started.cancelled().await;
+                    token.cancel();
+                    tokio::task::yield_now().await;
+                    // The next preview cannot overtake a response or CLOSE.
+                    assert!(worker.clone().try_acquire_owned().is_err());
+                    gate.resume.cancel();
+                };
+                let (result, ()) = tokio::join!(
+                    preview_io::run(&token, REQUEST_TIMEOUT, "timed out", work),
+                    cancel,
+                );
+                assert!(
+                    matches!(result, Err(SftpError::TransferCancelled)),
+                    "{operation}"
+                );
+                assert_eq!(
+                    closed.load(Ordering::SeqCst),
+                    opened.load(Ordering::SeqCst),
+                    "{operation}"
+                );
+                if operation == "stat" {
+                    assert_eq!(opened.load(Ordering::SeqCst), 0);
+                }
+                if operation == "read" {
+                    assert_eq!(reads.load(Ordering::SeqCst), 1);
+                }
+                assert!(worker.clone().try_acquire_owned().is_ok());
+                assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+
+                let mut file = session.lock().await.open("/image.jpg").await.unwrap();
+                let mut original = Vec::new();
+                file.read_to_end(&mut original).await.unwrap();
+                file.shutdown().await.unwrap();
+                assert_eq!(original, source);
+            }
+        }
+        assert_eq!(warnings.load(Ordering::SeqCst), 0);
     }
 
     fn encoded_jpeg(width: u32, height: u32) -> Vec<u8> {
@@ -1357,13 +1548,14 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_stops_a_stalled_read() {
-        let (mut reader, _writer) = tokio::io::duplex(64);
+    async fn cancellation_drains_the_pending_chunk_before_stopping() {
+        let (mut reader, mut writer) = tokio::io::duplex(64);
         let token = CancellationToken::new();
         let read = read_bounded(&mut reader, 100, &token);
         let cancel = async {
             tokio::task::yield_now().await;
             token.cancel();
+            writer.write_all(b"pending reply").await.unwrap();
         };
         let (result, ()) = tokio::join!(read, cancel);
         assert!(matches!(result, Err(SftpError::TransferCancelled)));

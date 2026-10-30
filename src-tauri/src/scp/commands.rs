@@ -254,6 +254,8 @@ pub async fn scp_move_entries(
     target_dir: String,
     scp_manager: State<'_, Arc<ScpManager>>,
 ) -> Result<Vec<String>, ScpError> {
+    let (source_paths, target_dir) = crate::remote_path::prepare_move(source_paths, target_dir)
+        .map_err(ScpError::RemoteIoError)?;
     let handle = handle_for(&scp_manager, &scp_session_id)?;
     let mut new_paths = Vec::with_capacity(source_paths.len());
 
@@ -262,13 +264,6 @@ pub async fn scp_move_entries(
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".to_string());
-
-        // Prevent moving a directory into itself.
-        if target_dir.starts_with(source.as_str()) && source.contains('/') {
-            return Err(ScpError::RemoteIoError(format!(
-                "Cannot move {source} into itself"
-            )));
-        }
 
         let deduped = exec::deduplicate_name(handle.clone(), &target_dir, &name).await?;
         let dest = join_remote(&target_dir, &deduped);

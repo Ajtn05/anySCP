@@ -29,6 +29,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     preview::PreviewManager,
+    preview_io,
     thumbnail_cache::{CacheKey, ThumbnailCache},
     transfer_manager::TransferManager,
     SftpError, SftpManager,
@@ -271,11 +272,13 @@ async fn inspect(
 ) -> Result<FileAttributes, SftpError> {
     check(lease, &busy)?;
     let mut file = {
-        let sftp = session.lock().await;
+        let sftp = preview_io::cancel_safe(&lease.token, session.lock()).await?;
+        check(lease, &busy)?;
         let attrs = sftp
             .metadata(&lease.path)
             .await
             .map_err(|e| error(e.to_string()))?;
+        check(lease, &busy)?;
         if attrs.file_type() != FileType::File
             || attrs
                 .size
@@ -290,6 +293,7 @@ async fn inspect(
             .map_err(|e| error(e.to_string()))?
     };
     let result = async {
+        check(lease, &busy)?;
         let before = file.metadata().await.map_err(|e| error(e.to_string()))?;
         if before.file_type() != FileType::File
             || before
@@ -308,9 +312,19 @@ async fn inspect(
                 .map_err(|_| error("Video poster exceeds the read budget"))?;
         }
         let mut header = [0; 16];
-        file.read_exact(&mut header)
-            .await
-            .map_err(|e| error(e.to_string()))?;
+        let mut filled = 0;
+        while filled < header.len() {
+            check(lease, &busy)?;
+            let n = file
+                .read(&mut header[filled..])
+                .await
+                .map_err(|e| error(e.to_string()))?;
+            if n == 0 {
+                return Err(error("The video ended before its header"));
+            }
+            filled += n;
+        }
+        check(lease, &busy)?;
         let valid = if mime(&lease.path) == Some("video/webm") {
             header.starts_with(&[0x1a, 0x45, 0xdf, 0xa3])
         } else {
@@ -322,6 +336,7 @@ async fn inspect(
             ));
         }
         let after = file.metadata().await.map_err(|e| error(e.to_string()))?;
+        check(lease, &busy)?;
         if !unchanged(&before, &after) {
             return Err(error("The video changed while loading"));
         }
@@ -329,6 +344,7 @@ async fn inspect(
     }
     .await;
     let _ = file.shutdown().await;
+    preview_io::check(&lease.token)?;
     result
 }
 
@@ -353,10 +369,8 @@ pub async fn sftp_video_open(
                 || (lease.thumbnail && (previews.has_foreground() || videos.has_foreground()))
         };
         check(&lease, &busy)?;
-        let _permit = previews
-            .worker()
-            .acquire_owned()
-            .await
+        let _permit = preview_io::cancel_safe(&lease.token, previews.worker().acquire_owned())
+            .await?
             .map_err(|e| error(e.to_string()))?;
         let generation = cache.generation(&lease.session).await;
         let session = { sftp.get_session(&lease.session)?.sftp.clone() };
@@ -369,10 +383,7 @@ pub async fn sftp_video_open(
             mime: mime(&lease.path).unwrap(),
         })
     };
-    let result = tokio::select! {
-        _ = lease.token.cancelled() => Err(SftpError::TransferCancelled),
-        result = tokio::time::timeout(TIMEOUT, work) => result.unwrap_or_else(|_| Err(error("Video preview timed out"))),
-    };
+    let result = preview_io::run(&lease.token, TIMEOUT, "Video preview timed out", work).await;
     if result.is_err() {
         videos.cancel(&request_id, window.label());
     }
@@ -451,11 +462,13 @@ async fn read_range(
         return Err(error("Video poster exceeds the 8 MiB read budget"));
     }
     let mut file = {
-        let sftp = session.lock().await;
+        let sftp = preview_io::cancel_safe(&lease.token, session.lock()).await?;
+        check(lease, &busy)?;
         let attrs = sftp
             .metadata(&lease.path)
             .await
             .map_err(|e| error(e.to_string()))?;
+        check(lease, &busy)?;
         if !unchanged(expected, &attrs) {
             return Err(error("The video changed. Open the preview again."));
         }
@@ -464,7 +477,9 @@ async fn read_range(
             .map_err(|e| error(e.to_string()))?
     };
     let result = async {
+        check(lease, &busy)?;
         let attrs = file.metadata().await.map_err(|e| error(e.to_string()))?;
+        check(lease, &busy)?;
         if !unchanged(expected, &attrs) {
             return Err(error("The video changed before loading"));
         }
@@ -490,7 +505,9 @@ async fn read_range(
             }
             filled += n;
         }
+        check(lease, &busy)?;
         let after = file.metadata().await.map_err(|e| error(e.to_string()))?;
+        check(lease, &busy)?;
         if !unchanged(expected, &after) {
             return Err(error("The video changed while loading"));
         }
@@ -498,6 +515,7 @@ async fn read_range(
     }
     .await;
     let _ = file.shutdown().await;
+    preview_io::check(&lease.token)?;
     result
 }
 
@@ -589,18 +607,13 @@ async fn serve(app: &AppHandle, window: &str, request: Request<Vec<u8>>) -> Resp
                 || (lease.thumbnail && (previews.has_foreground() || videos.has_foreground()))
         };
         check(&lease, &busy)?;
-        let _permit = previews
-            .worker()
-            .acquire_owned()
-            .await
+        let _permit = preview_io::cancel_safe(&lease.token, previews.worker().acquire_owned())
+            .await?
             .map_err(|e| error(e.to_string()))?;
         let session = { sftp.get_session(&lease.session)?.sftp.clone() };
         read_range(session, &lease, start, end, busy).await
     };
-    let result = tokio::select! {
-        _ = lease.token.cancelled() => Err(SftpError::TransferCancelled),
-        result = tokio::time::timeout(TIMEOUT, work) => result.unwrap_or_else(|_| Err(error("Video range timed out"))),
-    };
+    let result = preview_io::run(&lease.token, TIMEOUT, "Video range timed out", work).await;
     match result {
         Ok(bytes) => reply(
             if header.is_some() { 206 } else { 200 },
@@ -627,17 +640,18 @@ pub async fn sftp_video_poster_cached(
 ) -> Result<IpcResponse, SftpError> {
     let lease = videos.get(&request_id, window.label())?;
     let work = async {
+        preview_io::check(&lease.token)?;
         let expected = lease
             .metadata
             .get()
             .ok_or_else(|| error("Video is not open"))?;
         let session = { sftp.get_session(&lease.session)?.sftp.clone() };
-        let attrs = session
-            .lock()
-            .await
+        let attrs = preview_io::cancel_safe(&lease.token, session.lock())
+            .await?
             .metadata(&lease.path)
             .await
             .map_err(|e| error(e.to_string()))?;
+        preview_io::check(&lease.token)?;
         if !unchanged(expected, &attrs) {
             return Err(error("The video changed before loading"));
         }
@@ -648,10 +662,7 @@ pub async fn sftp_video_poster_cached(
         };
         Ok(IpcResponse::new(bytes))
     };
-    tokio::select! {
-        _ = lease.token.cancelled() => Err(SftpError::TransferCancelled),
-        result = tokio::time::timeout(TIMEOUT, work) => result.unwrap_or_else(|_| Err(error("Video poster lookup timed out"))),
-    }
+    preview_io::run(&lease.token, TIMEOUT, "Video poster lookup timed out", work).await
 }
 
 fn normalize_poster(bytes: &[u8]) -> Result<Vec<u8>, SftpError> {
@@ -703,11 +714,10 @@ pub async fn sftp_video_poster_store(
     }
     let bytes = bytes.clone();
     let work = async {
-        let permit = previews
-            .worker()
-            .acquire_owned()
-            .await
+        let permit = preview_io::cancel_safe(&lease.token, previews.worker().acquire_owned())
+            .await?
             .map_err(|e| error(e.to_string()))?;
+        preview_io::check(&lease.token)?;
         let png = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             normalize_poster(&bytes)
@@ -722,12 +732,12 @@ pub async fn sftp_video_poster_store(
             .get()
             .ok_or_else(|| error("Video is not open"))?;
         let session = { sftp.get_session(&lease.session)?.sftp.clone() };
-        let attrs = session
-            .lock()
-            .await
+        let attrs = preview_io::cancel_safe(&lease.token, session.lock())
+            .await?
             .metadata(&lease.path)
             .await
             .map_err(|e| error(e.to_string()))?;
+        preview_io::check(&lease.token)?;
         if !unchanged(expected, &attrs) {
             return Err(error("The video changed before saving its poster"));
         }
@@ -741,15 +751,20 @@ pub async fn sftp_video_poster_store(
         }
         Ok(())
     };
-    tokio::select! {
-        _ = lease.token.cancelled() => Err(SftpError::TransferCancelled),
-        result = tokio::time::timeout(TIMEOUT, work) => result.unwrap_or_else(|_| Err(error("Video poster cache write timed out"))),
-    }
+    preview_io::run(
+        &lease.token,
+        TIMEOUT,
+        "Video poster cache write timed out",
+        work,
+    )
+    .await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::preview::tests::test_session_counted;
+    use super::super::preview::tests::{
+        test_session_counted, test_session_gated, ReplyWarnings, TestGate,
+    };
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
@@ -915,9 +930,8 @@ mod tests {
     async fn transfer_deferral_and_cancellation_close_only_preview_handles() {
         let (lease, (session, closed, _), reads) =
             prepared(movie(RANGE_LIMIT as usize), true).await;
-        let calls = AtomicUsize::new(0);
         let result = read_range(session.clone(), &lease, 0, RANGE_LIMIT - 1, || {
-            calls.fetch_add(1, Ordering::SeqCst) >= 2
+            reads.load(Ordering::SeqCst) > 16
         })
         .await;
         assert!(matches!(result, Err(SftpError::PreviewDeferred)));
@@ -930,6 +944,75 @@ mod tests {
             Err(SftpError::TransferCancelled)
         ));
         assert_eq!(reads.load(Ordering::SeqCst), 16 + 32768);
+    }
+
+    #[tokio::test]
+    async fn cancelling_video_inspection_and_ranges_drains_replies_and_closes_handles() {
+        use tracing_subscriber::prelude::*;
+        let warnings = Arc::new(AtomicUsize::new(0));
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(ReplyWarnings(warnings.clone())),
+        );
+        let source = movie(96 * 1024);
+        for range in [false, true] {
+            for operation in ["stat", "open", "fstat", "read", "close"] {
+                let gate = TestGate::new(operation);
+                let ((session, closed, opened), _, reads) =
+                    test_session_gated(source.clone(), gate.clone()).await;
+                let lease = lease(true);
+                lease
+                    .metadata
+                    .set(FileAttributes {
+                        size: Some(source.len() as u64),
+                        permissions: Some(0o100644),
+                        mtime: Some(1),
+                        ..FileAttributes::empty()
+                    })
+                    .unwrap();
+                let work = async {
+                    if range {
+                        read_range(session.clone(), &lease, 0, source.len() as u64 - 1, || {
+                            false
+                        })
+                        .await
+                        .map(|_| ())
+                    } else {
+                        inspect(session.clone(), &lease, || false).await.map(|_| ())
+                    }
+                };
+                let cancel = async {
+                    gate.started.cancelled().await;
+                    lease.token.cancel();
+                    tokio::task::yield_now().await;
+                    gate.resume.cancel();
+                };
+                let (result, ()) = tokio::join!(
+                    preview_io::run(&lease.token, TIMEOUT, "timed out", work),
+                    cancel,
+                );
+                assert!(
+                    matches!(result, Err(SftpError::TransferCancelled)),
+                    "{operation}"
+                );
+                assert_eq!(
+                    closed.load(Ordering::SeqCst),
+                    opened.load(Ordering::SeqCst),
+                    "{operation}"
+                );
+                if operation == "stat" {
+                    assert_eq!(opened.load(Ordering::SeqCst), 0);
+                }
+                if operation == "read" {
+                    assert_eq!(reads.load(Ordering::SeqCst), 1);
+                }
+                let mut file = session.lock().await.open("/movie.mp4").await.unwrap();
+                let mut original = Vec::new();
+                file.read_to_end(&mut original).await.unwrap();
+                file.shutdown().await.unwrap();
+                assert_eq!(original, source);
+            }
+        }
+        assert_eq!(warnings.load(Ordering::SeqCst), 0);
     }
     #[tokio::test]
     async fn invalid_or_changed_sources_close_handles_without_decoding() {

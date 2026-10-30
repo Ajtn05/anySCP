@@ -96,10 +96,11 @@ pub(super) async fn probe<R: AsyncRead + Unpin>(
             Scan::More => {}
         }
         let want = chunk.len().min(limit - prefix.len());
-        let n = tokio::select! {
-            _ = token.cancelled() => return Err(SftpError::TransferCancelled),
-            result = reader.read(&mut chunk[..want]) => result.map_err(|e| SftpError::RemoteIoError(e.to_string()))?,
-        };
+        let n = reader
+            .read(&mut chunk[..want])
+            .await
+            .map_err(|e| SftpError::RemoteIoError(e.to_string()))?;
+        super::preview_io::check(token)?;
         if n == 0 {
             break None;
         }
@@ -317,12 +318,15 @@ pub(super) mod tests {
             Err(SftpError::PreviewDeferred)
         ));
         assert_eq!(reader.len(), source.len());
-        let (mut reader, _writer) = tokio::io::duplex(64);
+        let (mut reader, mut writer) = tokio::io::duplex(64);
         let token = CancellationToken::new();
         let read = probe(&mut reader, 1000, &token, &|| false);
         let cancel = async {
             tokio::task::yield_now().await;
             token.cancel();
+            tokio::io::AsyncWriteExt::write_all(&mut writer, b"\xff\xd8")
+                .await
+                .unwrap();
         };
         let (result, ()) = tokio::join!(read, cancel);
         assert!(matches!(result, Err(SftpError::TransferCancelled)));

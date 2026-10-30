@@ -104,10 +104,10 @@ impl<R: AsyncRead + AsyncSeek + Unpin, F: Fn() -> bool> Ranges<'_, R, F> {
                 .ok_or_else(invalid)?;
             self.metadata_left = self.metadata_left.checked_sub(length).ok_or_else(invalid)?;
         }
-        tokio::select! {
-            _ = self.token.cancelled() => return Err(SftpError::TransferCancelled),
-            result = self.reader.seek(SeekFrom::Start(offset)) => { result.map_err(|_| invalid())?; }
-        }
+        self.reader
+            .seek(SeekFrom::Start(offset))
+            .await
+            .map_err(|_| invalid())?;
         let mut bytes = vec![0; length];
         // Manual reads preserve the 32 KiB transfer checkpoint even if a server
         // returns short packets. read_exact would hide those packet boundaries.
@@ -115,10 +115,12 @@ impl<R: AsyncRead + AsyncSeek + Unpin, F: Fn() -> bool> Ranges<'_, R, F> {
         while filled < length {
             self.checkpoint()?;
             let end = (filled + CHUNK).min(length);
-            let n = tokio::select! {
-                _ = self.token.cancelled() => return Err(SftpError::TransferCancelled),
-                result = self.reader.read(&mut bytes[filled..end]) => result.map_err(|_| invalid())?,
-            };
+            let n = self
+                .reader
+                .read(&mut bytes[filled..end])
+                .await
+                .map_err(|_| invalid())?;
+            self.checkpoint()?;
             if n == 0 {
                 return Err(invalid());
             }
@@ -573,7 +575,7 @@ pub(super) mod tests {
     struct Counted {
         cursor: Cursor<Vec<u8>>,
         bytes: Arc<AtomicUsize>,
-        stall_at: Option<u64>,
+        cancel_at: Option<(u64, CancellationToken)>,
     }
     impl AsyncRead for Counted {
         fn poll_read(
@@ -581,11 +583,10 @@ pub(super) mod tests {
             cx: &mut Context<'_>,
             buf: &mut ReadBuf<'_>,
         ) -> Poll<std::io::Result<()>> {
-            if self
-                .stall_at
-                .is_some_and(|offset| self.cursor.position() >= offset)
-            {
-                return Poll::Pending;
+            if let Some((offset, token)) = &self.cancel_at {
+                if self.cursor.position() >= *offset {
+                    token.cancel();
+                }
             }
             let before = buf.filled().len();
             let result = Pin::new(&mut self.cursor).poll_read(cx, buf);
@@ -614,7 +615,7 @@ pub(super) mod tests {
         let mut reader = Counted {
             cursor: Cursor::new(fixture(&jpeg, true, false)),
             bytes: bytes.clone(),
-            stall_at: None,
+            cancel_at: None,
         };
         let token = CancellationToken::new();
         let result = extract(
@@ -658,20 +659,15 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_interrupts_a_stalled_raw_range_read() {
+    async fn cancellation_stops_raw_ranges_after_the_current_reply() {
         let bytes = Arc::new(AtomicUsize::new(0));
+        let token = CancellationToken::new();
         let mut reader = Counted {
             cursor: Cursor::new(fixture(&[0xff, 0xd8, 0xff, 1], true, false)),
             bytes,
-            stall_at: Some(4096),
+            cancel_at: Some((4096, token.clone())),
         };
-        let token = CancellationToken::new();
-        let read = extract(&mut reader, 8192, 1024, false, &token, || false);
-        let cancel = async {
-            tokio::task::yield_now().await;
-            token.cancel();
-        };
-        let (result, ()) = tokio::join!(read, cancel);
+        let result = extract(&mut reader, 8192, 1024, false, &token, || false).await;
         assert!(matches!(result, Err(SftpError::TransferCancelled)));
     }
 }

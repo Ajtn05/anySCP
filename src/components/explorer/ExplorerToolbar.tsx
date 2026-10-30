@@ -38,6 +38,8 @@ interface ExplorerToolbarProps {
    *  folder). Transports without recursive upload can leave it undefined. */
   onUploadFolder?: () => void;
   busy?: boolean;
+  /** Valid pointer-drag destination in this explorer. */
+  dropTargetPath?: string | null;
   sudoMode?: boolean;
   sudoBusy?: boolean;
   onToggleSudo?: () => void;
@@ -104,6 +106,7 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
   onUpload,
   onUploadFolder,
   busy,
+  dropTargetPath,
   sudoMode,
   sudoBusy,
   onToggleSudo,
@@ -171,15 +174,17 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
     providerType === "sftp" ? currentPath === "/" : currentPath === "";
 
   return (
-    <div className="flex items-center h-10 px-2 border-b border-border bg-bg-surface shrink-0 gap-1 no-select">
+    <div data-explorer-session={provider.sessionId} className="flex items-center h-10 px-2 border-b border-border bg-bg-surface shrink-0 gap-1 no-select">
       {/* Home button */}
       <button
         data-testid="explorer-home"
+        data-explorer-drop-path={caps.canInternalDragMove && !isAtRoot && !loading && !busy ? (providerType === "sftp" ? "/" : "") : undefined}
+        data-drop-active={dropTargetPath === (providerType === "sftp" ? "/" : "") || undefined}
         onClick={handleHome}
         disabled={loading || isAtRoot}
         title={`Go to ${provider.rootLabel()}`}
         aria-label="Go to root"
-        className={ICON_BTN_CLASS}
+        className={`${ICON_BTN_CLASS} ${dropTargetPath === (providerType === "sftp" ? "/" : "") ? "ring-2 ring-accent bg-accent/10 text-accent" : ""}`}
       >
         <Home size={15} strokeWidth={1.8} aria-hidden="true" />
       </button>
@@ -236,6 +241,8 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
                   />
                 )}
                 <button
+                  data-explorer-drop-path={caps.canInternalDragMove && !isLast && !loading && !busy ? seg.path : undefined}
+                  data-drop-active={dropTargetPath === seg.path || undefined}
                   onClick={(e) => {
                     // Segment clicks navigate directly; don't let the click bubble up and open edit mode on the same action.
                     e.stopPropagation();
@@ -243,7 +250,7 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
                   }}
                   disabled={isLast}
                   title={isLast ? seg.path : `Navigate to ${seg.path}`}
-                  className={`${SEGMENT_BTN_BASE_CLASS} ${isLast ? SEGMENT_BTN_LAST_CLASS : SEGMENT_BTN_LINK_CLASS}`}
+                  className={`${SEGMENT_BTN_BASE_CLASS} ${isLast ? SEGMENT_BTN_LAST_CLASS : SEGMENT_BTN_LINK_CLASS} ${dropTargetPath === seg.path ? "ring-2 ring-accent bg-accent/10 text-accent" : ""}`}
                 >
                   {isRoot ? provider.rootLabel() : seg.label}
                 </button>

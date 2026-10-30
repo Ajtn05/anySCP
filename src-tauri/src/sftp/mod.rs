@@ -1,6 +1,7 @@
 pub mod commands;
 mod jpeg_thumbnail;
 pub mod preview;
+mod preview_io;
 mod raw_preview;
 pub mod thumbnail_cache;
 pub mod transfer_manager;

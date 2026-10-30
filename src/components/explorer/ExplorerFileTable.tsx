@@ -20,6 +20,7 @@ import {
   Scissors,
   ClipboardPaste,
   FolderPlus,
+  FolderInput,
   FilePlus,
   ExternalLink,
   Info,
@@ -45,6 +46,8 @@ import { isEditableInEditor } from "../../lib/file-types";
 import { FilePropertiesDialog } from "./FilePropertiesDialog";
 import { Thumbnail } from "./Thumbnail";
 import { ExplorerZoomControls } from "./ExplorerZoomControls";
+import { MoveToDialog } from "./MoveToDialog";
+import { moveDestinationError } from "../../lib/explorer-move";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -85,6 +88,9 @@ interface ExplorerFileTableProps {
   onCancelCreateFolder?: () => void;
   onPaste?: () => void;
   onMoveEntries?: (sourceIds: string[], targetDir: string) => Promise<void>;
+  /** List destinations without navigating the main explorer. */
+  onListDirectory?: (path: string) => Promise<ExplorerEntry[]>;
+  onDropTargetChange?: (path: string | null) => void;
   onCopyEntries?: (sourceIds: string[], targetDir: string) => Promise<void>;
   /** Drag the selection out to the OS (download to desktop/Finder), files and
    *  folders alike. Triggered by a primary-modifier drag (⌘ on macOS, Ctrl
@@ -368,10 +374,13 @@ export function ExplorerFileTable({
   onCancelCreateFile,
   onPaste,
   onMoveEntries,
+  onListDirectory,
+  onDropTargetChange,
   onCopyEntries,
   onDragOut,
   currentPath,
   loading,
+  busy,
   viewMode = "list",
   isActive = true,
   thumbnailsActive = true,
@@ -400,9 +409,32 @@ export function ExplorerFileTable({
     null,
   );
   const [propsEntry, setPropsEntry] = useState<ExplorerEntry | null>(null);
+  const [moveSelection, setMoveSelection] = useState<ExplorerEntry[] | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const lastClickedId = useRef<string | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    setMoveSelection(null);
+  }, [currentPath, provider.sessionId, isActive]);
+
+  useEffect(() => () => dragCleanupRef.current?.(), [currentPath, provider.sessionId, isActive, loading, busy]);
+
+  useEffect(() => {
+    if (loading || busy) return;
+    const remaining = new Set(entries.map((entry) => entry.id));
+    setSelectedIds((selection) => {
+      if ([...selection].every((id) => remaining.has(id))) return selection;
+      return new Set([...selection].filter((id) => remaining.has(id)));
+    });
+    // After a partial batch failure, retry only the sources still present.
+    setMoveSelection((selection) => {
+      if (!selection || selection.every((entry) => remaining.has(entry.id))) return selection;
+      const items = selection.filter((entry) => remaining.has(entry.id));
+      return items.length ? items : null;
+    });
+  }, [entries, loading, busy]);
 
   // Drag-and-drop state (internal move). The OS-level Tauri drag-drop handler is
   // enabled (for file-drop uploads), which suppresses HTML5 drag events in the
@@ -610,16 +642,17 @@ export function ExplorerFileTable({
   // HTML5 drag-and-drop doesn't fire in the webview while Tauri's OS drag-drop
   // handler is enabled (it is, for file-drop uploads), so all dragging is driven
   // by pointer events. The DESTINATION decides the action (no modifier keys):
-  //   • drop on a folder row     → in-app move  (hold Alt while dropping = copy)
+  //   • drop on a folder or path segment → move (hold Alt while dropping = copy)
   //   • drag out of the window   → native OS download (drag-out to desktop)
   // The folder under the cursor is hit-tested with elementFromPoint; a plain
   // click never crosses the 5px threshold, so selection and double-click are
   // unaffected.
   const handleRowPointerDown = useCallback(
     (e: React.PointerEvent, entry: ExplorerEntry) => {
-      if (e.button !== 0 || renamingId) return;
+      if (e.button !== 0 || renamingId || loading || busy || !isActive || moveSelection) return;
       if (!(caps.canInternalDragMove || onDragOut)) return;
       if ((e.target as HTMLElement).closest("input")) return;
+      dragCleanupRef.current?.();
 
       const dragEntries =
         selectedIds.has(entry.id) && selectedIds.size > 1
@@ -630,25 +663,21 @@ export function ExplorerFileTable({
       let started = false;
       let moving = false;
 
-      // Resolve the directory row under a point to a valid drop target id, or
-      // null (not a dir, or dropping onto self / into the dragged subtree).
+      // Breadcrumbs and folder rows share the same move validation. Restrict
+      // hit-testing to this session so another tab/pane can't receive the drop.
       const folderTargetAt = (x: number, y: number): string | null => {
-        const row = (
-          document.elementFromPoint(x, y) as HTMLElement | null
-        )?.closest("[data-entry-row]") as HTMLElement | null;
-        if (!row || row.dataset.entryType !== "Directory") return null;
-        const target = entries.find(
-          (en) =>
-            en.name === row.dataset.entryName && en.entryType === "Directory",
-        );
-        if (!target) return null;
-        const ids = dragEntries.map((s) => s.id);
-        if (
-          ids.includes(target.id) ||
-          ids.some((p) => target.id.startsWith(p + "/"))
-        )
-          return null;
-        return target.id;
+        const element = document.elementFromPoint(x, y);
+        const breadcrumb = element?.closest<HTMLElement>("[data-explorer-drop-path]");
+        let target: string | undefined;
+        if (breadcrumb?.closest<HTMLElement>("[data-explorer-session]")?.dataset.explorerSession === provider.sessionId) {
+          target = breadcrumb.dataset.explorerDropPath;
+        } else {
+          const row = element?.closest<HTMLElement>("[data-entry-row]");
+          if (row && tableRef.current?.contains(row) && row.dataset.entryType === "Directory") {
+            target = entries.find((en) => en.name === row.dataset.entryName && en.entryType === "Directory")?.id;
+          }
+        }
+        return target && !moveDestinationError(dragEntries, target) ? target : null;
       };
 
       // Hand off to the native OS download drag (only once).
@@ -684,7 +713,9 @@ export function ExplorerFileTable({
             dragOut();
             return;
           }
-          setDragOverId(folderTargetAt(ev.clientX, ev.clientY));
+          const target = folderTargetAt(ev.clientX, ev.clientY);
+          setDragOverId(target);
+          onDropTargetChange?.(target);
           setDragGhost({
             x: ev.clientX,
             y: ev.clientY,
@@ -703,35 +734,40 @@ export function ExplorerFileTable({
       // Reflect Alt (copy) the instant it's pressed/released, without waiting for
       // the next pointer move.
       const onKey = (ev: KeyboardEvent) => {
+        if (ev.key === "Escape") { teardown(); return; }
         if (moving) setDragGhost((g) => (g ? { ...g, copy: ev.altKey } : g));
       };
 
       const onUp = (ev: PointerEvent) => {
-        if (moving) {
-          const targetId = folderTargetAt(ev.clientX, ev.clientY);
-          if (targetId) {
-            const handler = ev.altKey ? onCopyEntries : onMoveEntries;
-            void handler?.(
-              dragEntries.map((s) => s.id),
-              targetId,
-            );
-          }
-        }
+        const targetId = moving ? folderTargetAt(ev.clientX, ev.clientY) : null;
         teardown();
+        if (targetId) {
+          const handler = ev.altKey ? onCopyEntries : onMoveEntries;
+          // The view reports failures; consume the rejection for a drag, while
+          // MoveToDialog awaits it to keep a failed move open for retry.
+          void handler?.(dragEntries.map((s) => s.id), targetId).catch(() => {});
+        }
       };
 
       function teardown() {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", teardown);
+        window.removeEventListener("blur", teardown);
         window.removeEventListener("keydown", onKey);
         window.removeEventListener("keyup", onKey);
         document.removeEventListener("mouseleave", onWindowLeave);
         setDragOverId(null);
+        onDropTargetChange?.(null);
         setDragGhost(null);
+        dragCleanupRef.current = null;
       }
 
+      dragCleanupRef.current = teardown;
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", teardown);
+      window.addEventListener("blur", teardown);
       window.addEventListener("keydown", onKey);
       window.addEventListener("keyup", onKey);
       document.addEventListener("mouseleave", onWindowLeave);
@@ -741,10 +777,16 @@ export function ExplorerFileTable({
       onDragOut,
       onMoveEntries,
       onCopyEntries,
+      onDropTargetChange,
+      provider.sessionId,
       selectedIds,
       selectedEntries,
       entries,
       renamingId,
+      loading,
+      busy,
+      isActive,
+      moveSelection,
     ],
   );
 
@@ -850,6 +892,10 @@ export function ExplorerFileTable({
 
     if (isInSelection) {
       const count = selectedIds.size;
+      if (caps.canInternalDragMove && onMoveEntries && onListDirectory) {
+        items.push({ label: `Move ${count} items to…`, icon: FolderInput,
+          disabled: loading || busy, onClick: () => setMoveSelection(selectedEntries) });
+      }
       if (caps.canDownload && onDownloadMany) {
         items.push({
           label: `Download ${count} items`,
@@ -960,6 +1006,11 @@ export function ExplorerFileTable({
         icon: Pencil,
         onClick: () => setRenamingId(entry.id),
       });
+    }
+
+    if (caps.canInternalDragMove && onMoveEntries && onListDirectory) {
+      items.push({ label: "Move to…", icon: FolderInput,
+        disabled: loading || busy, onClick: () => setMoveSelection([entry]) });
     }
 
     items.push({
@@ -1263,6 +1314,7 @@ export function ExplorerFileTable({
                   onClick={(e) => handleRowClick(entry, e)}
                   onDoubleClick={() => handleDoubleClick(entry)}
                   onContextMenu={(e) => {
+                    e.currentTarget.focus();
                     if (!selectedIds.has(entry.id))
                       setSelectedIds(new Set([entry.id]));
                     handleContextMenu(e, entry);
@@ -1450,7 +1502,7 @@ export function ExplorerFileTable({
           </div>
         )}
       </div>
-      <ExplorerZoomControls isActive={isActive} />
+      <ExplorerZoomControls isActive={isActive && !moveSelection} />
 
       {/* Context menu */}
       {contextMenu && (
@@ -1471,6 +1523,13 @@ export function ExplorerFileTable({
       )}
 
       {/* Properties dialog */}
+      {moveSelection && onMoveEntries && onListDirectory && (
+        <MoveToDialog provider={provider} entries={moveSelection}
+          currentPath={currentPath ?? provider.parentPath(moveSelection[0].id)}
+          onListDirectory={onListDirectory} onMove={onMoveEntries}
+          onClose={() => setMoveSelection(null)} />
+      )}
+
       {propsEntry && (
         <FilePropertiesDialog
           entry={propsEntry}

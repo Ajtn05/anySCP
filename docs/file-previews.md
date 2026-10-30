@@ -27,7 +27,7 @@ surface. Registering a request precedes I/O so cancellation can cover pending
 metadata/open calls. Rust validates regular-file target metadata, opens files
 read-only, releases the session mutex before reading, checks size/mtime again,
 and returns a small metadata header followed by binary content. A 30-second
-deadline bounds each read request. Preview work never enters the transfer
+deadline stops further preview work. Preview work never enters the transfer
 queue or installs an editor save watcher.
 
 Only one preview job/decoder runs at once. Blocking image decoding retains its
@@ -65,8 +65,11 @@ the normal loading indicator when none is available. The existing session,
 metadata, expiry, and invalidation rules apply to this reuse.
 
 An IntersectionObserver shared by the scroll container starts work only for
-visible images. Scrolling images offscreen cancels their reads and releases
-their object URLs. A bounded queue deduplicates requests and fetches one image
+images that stay visible for 120 ms. Memory-cache hits display immediately,
+including while transfers pause network work. A displayed thumbnail stays in
+place through pause/resume without another fetch. Scrolling images offscreen
+cancels their reads and releases their object URLs. A bounded queue deduplicates
+requests and fetches one image
 at a time across tabs. Hidden tabs and an open Quick Look stop background
 loading. Active/queued transfers pause it; the Rust reader also checks queued
 and legacy SFTP transfer state between requests. Full JPEG/PNG fallback reads
@@ -74,6 +77,23 @@ request up to 128 KiB at a time; JPEG header probes, RAW reads, and video poster
 reads retain 32 KiB checkpoints. Only one read/decoder runs at a time, so a new
 transfer can have at most one existing thumbnail read to wait for. Blocking
 decodes retain their permit until completion.
+
+Cancellation and deadlines stop new SFTP requests at packet boundaries. A pending
+reply and the file's explicit close finish before the worker is released; each
+reply wait uses the SFTP library's timeout (ten seconds by default). Cleanup can
+therefore extend beyond the deadline, and an already-running image decode must
+also finish. The frontend discards cancelled results immediately. Waiting for a
+reply avoids orphaning a handle when OPEN is cancelled and avoids the library's
+misleading `Client error. (channel closed)` warnings when a response arrives
+after its receiver has been dropped. This warning alone does not establish that
+the SSH connection closed. The same cleanup applies to video inspection, ranges,
+and poster metadata requests. Protocol tests delay stat/open/fstat/read/close
+responses and verify cancellation, handle closure, no client warnings, no extra
+data requests, and a subsequent byte-identical original download.
+
+Preview tracing includes request/session IDs, thumbnail status, elapsed time,
+and returned byte counts. Expected cancellation and transfer deferral are logged
+at debug level; failures retain their error at warning level.
 
 ### Faster photo thumbnails
 
@@ -218,7 +238,8 @@ file fits that limit; larger no-Range GETs fail instead of downloading a movie.
 HEAD returns metadata without file bytes. Ranges share the existing single
 preview worker, and at most four protocol requests are admitted at once.
 The service allows at most eight leases and expires them after two minutes
-without requests. Each I/O request has a 15-second timeout. Background reads
+without requests. Each I/O request has a 15-second deadline followed by the
+same pending-reply/handle cleanup described above. Background reads
 check transfer state between packets up to 32 KiB; foreground playback uses up
 to 256 KiB to reduce network round trips. The SFTP library's server limits can
 reduce those packet sizes. Active SFTP transfers defer range reads in Rust;
