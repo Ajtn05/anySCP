@@ -108,6 +108,10 @@ AnySCP is a free, open-source desktop application that combines an SSH terminal,
 - Recent connections list for quick access
 - Full connection history with audit log
 
+### Interface styles
+
+Choose **Classic**, **Studio**, or **Workbench** in **Settings → Appearance**. Classic keeps the original interface. Studio uses a quieter workspace with grouped controls and spacious connection cards. Workbench uses compact connection rows with server addresses, last-used times, and visible actions. Styles apply throughout the app, support light and dark mode, and preserve your accent and font choices. The selected style is remembered across restarts.
+
 ### 📋 Command Snippets Library
 
 - Save frequently used shell commands with labels and descriptions

@@ -41,7 +41,7 @@ export function CardActionButton({
       aria-busy={busy || undefined}
       aria-label={ariaLabel}
       className={[
-        "group/btn relative flex items-center justify-center h-8 w-8 rounded-md",
+        "card-action group/btn relative flex items-center justify-center h-8 w-8 rounded-md",
         colorClass,
         "hover:text-text-primary hover:bg-bg-overlay",
         "transition-[background-color,color] duration-[var(--duration-fast)]",
@@ -55,8 +55,10 @@ export function CardActionButton({
         aria-hidden="true"
         className={busy ? "shrink-0 motion-safe:animate-pulse" : "shrink-0"}
       />
+      <span className="card-action-label">{label}</span>
       <span
         className={[
+          "card-action-tooltip",
           "absolute top-full right-0 mt-1 z-10 pointer-events-none",
           "px-1.5 py-0.5 rounded-md bg-bg-overlay border border-border shadow-[var(--shadow-md)]",
           "whitespace-nowrap text-[length:var(--text-xs)] font-medium text-text-primary",
@@ -72,5 +74,5 @@ export function CardActionButton({
 /** Top-right container for a row of CardActionButtons. Flush (no gap) so the
  *  hover targets are contiguous and the cursor never flashes over a dead gap. */
 export function CardActionStrip({ children }: { children: React.ReactNode }) {
-  return <div className="absolute top-2 right-2 flex items-center">{children}</div>;
+  return <div className="card-actions absolute top-2 right-2 flex items-center">{children}</div>;
 }

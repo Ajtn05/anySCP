@@ -147,6 +147,7 @@ export function HostCard({ host, onConnect, onExplore, onEdit, onDelete, onDupli
   ];
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.target !== e.currentTarget) return;
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       onConnect(host);
@@ -177,6 +178,7 @@ export function HostCard({ host, onConnect, onExplore, onEdit, onDelete, onDupli
         onContextMenu={handleContextMenu}
         title={`Connect to ${displayName}`}
         className={[
+          "connection-card host-connection-card",
           // grab/grabbing communicates the card is draggable; the click-to-connect
           // action still fires for a plain click (drag needs a 5px move first).
           "group relative isolate flex flex-col gap-2.5 p-3.5 rounded-xl text-left w-full h-full cursor-grab active:cursor-grabbing overflow-hidden",
@@ -189,7 +191,7 @@ export function HostCard({ host, onConnect, onExplore, onEdit, onDelete, onDupli
 
         {/* Color accent gradient */}
         <div
-          className="absolute inset-0 pointer-events-none -z-10 opacity-70 group-hover:opacity-100 transition-opacity duration-[var(--duration-fast)]"
+          className="connection-wash absolute inset-0 pointer-events-none -z-10 opacity-70 group-hover:opacity-100 transition-opacity duration-[var(--duration-fast)]"
           style={{
             background: `radial-gradient(circle at top left, ${avatarColor}33, transparent 60%)`,
           }}
@@ -227,7 +229,7 @@ export function HostCard({ host, onConnect, onExplore, onEdit, onDelete, onDupli
 
         {/* Avatar circle */}
         <div
-          className="flex items-center justify-center w-9 h-9 rounded-full shrink-0 font-semibold text-[length:var(--text-sm)] select-none"
+          className="connection-avatar flex items-center justify-center w-9 h-9 rounded-full shrink-0 font-semibold text-[length:var(--text-sm)] select-none"
           style={{
             backgroundColor: `${avatarColor}25`,
             color: avatarColor,
@@ -239,17 +241,18 @@ export function HostCard({ host, onConnect, onExplore, onEdit, onDelete, onDupli
         </div>
 
         {/* Host info */}
-        <div className="min-w-0">
-          <p className="text-[length:var(--text-sm)] font-medium text-text-primary truncate leading-tight pr-24">
+        <div className="connection-info min-w-0">
+          <p className="connection-name text-[length:var(--text-sm)] font-medium text-text-primary truncate leading-tight pr-24">
             {displayName}
           </p>
           <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-            <p className="text-[length:var(--text-xs)] text-text-muted font-mono truncate">
+            <p className="connection-subtitle text-[length:var(--text-xs)] text-text-muted font-mono truncate">
               {subtitle}
             </p>
             {env && (
               <span
                 className={[
+                  "connection-environment",
                   "inline-flex items-center px-1 py-px rounded text-[11px] font-semibold tracking-wide leading-none shrink-0",
                   ENV_BADGE_CLASSES[env],
                 ].join(" ")}
@@ -284,7 +287,10 @@ export function HostCard({ host, onConnect, onExplore, onEdit, onDelete, onDupli
             {healthLabel}
           </p>
         </div>
-
+        <p className="connection-address" title={`${host.username}@${host.host}:${host.port}`}>
+          {host.username}@{host.host}<span>:{host.port}</span>
+        </p>
+        <p className="connection-last-used" title={host.last_connected_at ?? undefined}>{lastSeen ?? "Never connected"}</p>
       </div>
 
       {contextMenu && (

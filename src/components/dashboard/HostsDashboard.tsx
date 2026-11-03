@@ -561,17 +561,17 @@ export function HostsDashboard() {
 
   return (
     <>
-      <div className="flex flex-col h-full overflow-y-scroll bg-bg-base">
-        <div className="max-w-4xl w-full mx-auto px-8 py-8 flex flex-col gap-8">
+      <div className="workspace-page flex flex-col h-full overflow-y-scroll bg-bg-base">
+        <div className="hosts-page-content workspace-page-content max-w-4xl w-full mx-auto px-8 py-8 flex flex-col gap-8">
 
           {/* ── Page title ── */}
-          <div>
+          <div className="hosts-page-heading">
             <h1 className="text-[length:var(--text-lg)] font-semibold text-text-primary">Hosts</h1>
             <p className="text-[length:var(--text-xs)] text-text-muted mt-1">Manage your saved servers, organize them into groups, and connect with one click</p>
           </div>
 
           {/* ── Search bar ── */}
-          <div className="relative">
+          <div className="hosts-search relative">
             <Search
               size={16}
               strokeWidth={2}
@@ -607,7 +607,7 @@ export function HostsDashboard() {
           )}
 
           {/* ── Action buttons ── */}
-          <div className="flex gap-2">
+          <div className="hosts-actions flex gap-2">
             <button
               data-testid="new-host-button"
               onClick={() => setEditingHostId("__new__")}
@@ -691,7 +691,7 @@ export function HostsDashboard() {
                   items={groups.map((g) => g.id)}
                   strategy={rectSortingStrategy}
                 >
-                  <div className="grid grid-cols-3 gap-2.5">
+                  <div className="host-groups-grid grid grid-cols-3 gap-2.5">
                     {groups.map((group) => (
                       <SortableCard key={group.id} id={group.id}>
                         <GroupCard
@@ -710,7 +710,7 @@ export function HostsDashboard() {
           )}
 
           {/* ── Hosts section ── */}
-          <section aria-labelledby="hosts-heading">
+          <section aria-labelledby="hosts-heading" className="hosts-section">
             <div className="flex items-center gap-3 mb-3">
               {/* Breadcrumb back button when a group is selected */}
               {activeGroup && (
@@ -737,6 +737,7 @@ export function HostsDashboard() {
             </div>
 
             {/* Host grid or empty state */}
+            {filteredHosts.length > 0 && <div className="connection-columns" aria-hidden="true"><span /><span>Server</span><span>Address</span><span>Last used</span><span>Actions</span></div>}
             {filteredHosts.length > 0 ? (
               <DndContext
                 sensors={sensors}
@@ -747,7 +748,7 @@ export function HostsDashboard() {
                   items={filteredHosts.map((h) => h.id)}
                   strategy={rectSortingStrategy}
                 >
-                  <div className="grid grid-cols-3 gap-2.5">
+                  <div className="host-connections-grid grid grid-cols-3 gap-2.5">
                     {filteredHosts.map((host) => (
                       <SortableCard key={host.id} id={host.id}>
                         <HostCard
@@ -790,7 +791,7 @@ export function HostsDashboard() {
                   items={filteredS3.map((c) => c.id)}
                   strategy={rectSortingStrategy}
                 >
-                  <div className="grid grid-cols-3 gap-2.5">
+                  <div className="host-connections-grid grid grid-cols-3 gap-2.5">
                     {filteredS3.map((conn) => (
                       <SortableCard key={conn.id} id={conn.id}>
                         <S3Card

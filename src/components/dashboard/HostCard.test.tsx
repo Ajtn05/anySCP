@@ -74,6 +74,15 @@ describe("HostCard context menu", () => {
     expect(onDuplicate).toHaveBeenCalledWith(host);
   });
 
+  it("does not open a terminal when using an action button with the keyboard", () => {
+    const { onConnect, onExplore, host } = renderCard();
+    const explorer = screen.getByRole("button", { name: "Open explorer for web" });
+    fireEvent.keyDown(explorer, { key: "Enter" });
+    fireEvent.click(explorer);
+    expect(onExplore).toHaveBeenCalledWith(host);
+    expect(onConnect).not.toHaveBeenCalled();
+  });
+
   it("wires Delete to onDelete after the danger confirmation", () => {
     const { host, onDelete } = renderCard();
     openContextMenu();

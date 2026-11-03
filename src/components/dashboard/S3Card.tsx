@@ -58,6 +58,7 @@ export function S3Card({ conn, onConnect, onEdit, onDuplicate, onDelete }: S3Car
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.target !== e.currentTarget) return;
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       onConnect(conn);
@@ -84,6 +85,7 @@ export function S3Card({ conn, onConnect, onEdit, onDuplicate, onDelete }: S3Car
         onContextMenu={handleContextMenu}
         title={`Connect to ${displayName}`}
         className={[
+          "connection-card s3-connection-card",
           // grab/grabbing communicates the card is draggable; a plain click still
           // connects (drag needs a 5px move to activate first).
           "group relative isolate flex flex-col gap-2.5 p-3.5 rounded-xl text-left w-full h-full cursor-grab active:cursor-grabbing overflow-hidden",
@@ -96,7 +98,7 @@ export function S3Card({ conn, onConnect, onEdit, onDuplicate, onDelete }: S3Car
 
         {/* Color accent gradient */}
         <div
-          className="absolute inset-0 pointer-events-none -z-10 opacity-70 group-hover:opacity-100 transition-opacity duration-[var(--duration-fast)]"
+          className="connection-wash absolute inset-0 pointer-events-none -z-10 opacity-70 group-hover:opacity-100 transition-opacity duration-[var(--duration-fast)]"
           style={{
             background: `radial-gradient(circle at top left, ${accentColor}33, transparent 60%)`,
           }}
@@ -116,7 +118,7 @@ export function S3Card({ conn, onConnect, onEdit, onDuplicate, onDelete }: S3Car
 
         {/* Avatar circle */}
         <div
-          className="flex items-center justify-center w-9 h-9 rounded-full shrink-0 select-none"
+          className="connection-avatar flex items-center justify-center w-9 h-9 rounded-full shrink-0 select-none"
           style={{
             backgroundColor: `${accentColor}25`,
             color: accentColor,
@@ -127,12 +129,12 @@ export function S3Card({ conn, onConnect, onEdit, onDuplicate, onDelete }: S3Car
         </div>
 
         {/* Connection info */}
-        <div className="min-w-0">
-          <p className="text-[length:var(--text-sm)] font-medium text-text-primary truncate leading-tight pr-5">
+        <div className="connection-info min-w-0">
+          <p className="connection-name text-[length:var(--text-sm)] font-medium text-text-primary truncate leading-tight pr-5">
             {displayName}
           </p>
           <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-            <p className="text-[length:var(--text-xs)] text-text-muted font-mono truncate">
+            <p className="connection-subtitle text-[length:var(--text-xs)] text-text-muted font-mono truncate">
               {subtitle}
             </p>
             {env && (
@@ -147,6 +149,8 @@ export function S3Card({ conn, onConnect, onEdit, onDuplicate, onDelete }: S3Car
             )}
           </div>
         </div>
+        <p className="connection-address" title={conn.bucket || conn.endpoint || conn.region}>{conn.bucket ? `s3://${conn.bucket}` : conn.endpoint || conn.region}</p>
+        <p className="connection-last-used">{conn.provider}</p>
       </div>
 
       {contextMenu && (

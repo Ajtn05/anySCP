@@ -105,6 +105,11 @@ pub fn run() {
                 Ok(Some(v)) if v == "light" => "light",
                 _ => "dark",
             };
+            let interface_style = match host_db.get_setting("app_interface_style") {
+                Ok(Some(v)) if v == "studio" => "studio",
+                Ok(Some(v)) if v == "workbench" => "workbench",
+                _ => "classic",
+            };
             // Same rationale as the theme: inject the persisted accent hue before
             // first paint so the accent colour doesn't flash from the default.
             let accent_hue: f64 = host_db
@@ -160,7 +165,7 @@ pub fn run() {
             };
 
             let theme_script = format!(
-                "document.documentElement.dataset.theme = {theme:?}; document.documentElement.style.setProperty('--accent-hue', '{accent_hue}');{custom_accent_script}{font_script}{mono_font_script}"
+                "document.documentElement.dataset.theme = {theme:?}; document.documentElement.dataset.interfaceStyle = {interface_style:?}; document.documentElement.style.setProperty('--accent-hue', '{accent_hue}');{custom_accent_script}{font_script}{mono_font_script}"
             );
 
             WebviewWindowBuilder::new(app.handle(), "main", WebviewUrl::App("index.html".into()))

@@ -29,6 +29,7 @@ import { Toaster } from "../shared/Toaster";
 
 export function AppShell() {
   const themeMode = useSettingsStore((s) => s.themeMode);
+  const interfaceStyle = useSettingsStore((s) => s.interfaceStyle);
   const accentHue = useSettingsStore((s) => s.accentHue);
   const accentCustom = useSettingsStore((s) => s.accentCustom);
   const interfaceFont = useSettingsStore((s) => s.interfaceFont);
@@ -350,6 +351,10 @@ export function AppShell() {
   }, [themeMode]);
 
   useLayoutEffect(() => {
+    document.documentElement.dataset.interfaceStyle = interfaceStyle;
+  }, [interfaceStyle]);
+
+  useLayoutEffect(() => {
     document.documentElement.style.setProperty(
       "--accent-hue",
       String(accentHue),
@@ -405,12 +410,12 @@ export function AppShell() {
   const activePageType = activeTab?.type === "page" ? activeTab.page : null;
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-bg-base no-select p-2 gap-2">
+    <div className="app-shell flex h-screen w-screen overflow-hidden bg-bg-base no-select p-2 gap-2">
       {/* Sidebar rail */}
       <Sidebar />
 
       {/* Main content */}
-      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+      <div className="workspace-main flex flex-col flex-1 min-w-0 overflow-hidden">
         {/* Unified tab bar — always shown */}
         <UnifiedTabBar />
 

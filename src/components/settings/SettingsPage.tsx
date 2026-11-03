@@ -3,6 +3,7 @@ import { ModalShell, BTN_GHOST, BTN_PRIMARY, BTN_DANGER } from "../shared/ModalS
 import { ModalBackdrop } from "../shared/ModalBackdrop";
 import { useSettingsStore } from "../../stores/settings-store";
 import { CustomSelect, type SelectOption } from "../shared/CustomSelect";
+import { InterfaceStylePicker } from "./InterfaceStylePicker";
 import { useUpdaterStore } from "../../stores/updater-store";
 import { toast } from "../../stores/toast-store";
 import { RefreshCw, CheckCircle2, AlertCircle, Palette, SquareTerminal, ArrowUpDown, Info, ExternalLink, Check, FileCode, Plus, Trash2, FolderOpen, Star, Search, Database, Download, Upload, ShieldCheck } from "lucide-react";
@@ -81,12 +82,12 @@ export function SettingsPage() {
   const activeSection = SECTIONS.find((s) => s.id === active);
 
   return (
-    <div className="flex flex-col h-full p-2">
-      <div className="flex flex-1 min-h-0 rounded-lg overflow-hidden border border-border/60">
+    <div className="settings-page flex flex-col h-full p-2">
+      <div className="settings-layout flex flex-1 min-h-0 rounded-lg overflow-hidden border border-border/60">
         {/* Sidebar */}
         <nav
           aria-label="Settings sections"
-          className="w-60 shrink-0 flex flex-col gap-1 px-3 py-4 border-r border-border/50 bg-bg-surface/40 overflow-y-auto no-select"
+          className="settings-nav w-60 shrink-0 flex flex-col gap-1 px-3 py-4 border-r border-border/50 bg-bg-surface/40 overflow-y-auto no-select"
         >
           <h2 className="px-3 pt-1 pb-2 text-[length:var(--text-2xs)] font-semibold uppercase tracking-wider text-text-muted">
             Settings
@@ -123,7 +124,7 @@ export function SettingsPage() {
 
         {/* Content */}
         <div className="flex-1 overflow-y-scroll bg-bg-base">
-          <div className="max-w-4xl mx-auto px-8 py-6">
+          <div className="settings-content max-w-4xl mx-auto px-8 py-6">
             {/* Section header */}
             <div className="mb-6">
               <h1 className="text-2xl font-semibold tracking-tight text-text-primary">
@@ -339,6 +340,7 @@ function AppearanceSettings() {
 
   return (
     <>
+    <InterfaceStylePicker />
     <SettingsGroup label="Theme">
       <SettingRow>
         <div>
@@ -1475,7 +1477,7 @@ function AboutCard() {
 /** A labelled group of setting cards, mirroring the "THEME" / "INTERFACE" sections. */
 function SettingsGroup({ label, children }: { label?: string; children: React.ReactNode }) {
   return (
-    <section className="mb-6 last:mb-0">
+    <section className="settings-group mb-6 last:mb-0">
       {label && (
         <h2 className="px-1 mb-3 text-[length:var(--text-2xs)] font-semibold uppercase tracking-wider text-text-muted">
           {label}
@@ -1488,7 +1490,7 @@ function SettingsGroup({ label, children }: { label?: string; children: React.Re
 
 function SettingRow({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-4 px-4 py-3 rounded-xl bg-bg-surface border border-border/50">
+    <div className="setting-row flex items-center justify-between gap-4 px-4 py-3 rounded-xl bg-bg-surface border border-border/50">
       {children}
     </div>
   );

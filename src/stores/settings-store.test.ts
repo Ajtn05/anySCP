@@ -1,6 +1,39 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useSettingsStore } from "./settings-store";
 
+describe("settings-store — interface style", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue(undefined);
+    useSettingsStore.setState({ interfaceStyle: "classic" });
+  });
+
+  it.each(["classic", "studio", "workbench"] as const)("persists and restores %s", async (style) => {
+    useSettingsStore.getState().setInterfaceStyle(style);
+    expect(useSettingsStore.getState().interfaceStyle).toBe(style);
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("save_setting", {
+      key: "app_interface_style", value: style,
+    }));
+    useSettingsStore.setState({ interfaceStyle: "classic" });
+    invoke.mockImplementation(async (command: string) => command === "load_all_settings"
+      ? [["app_interface_style", style], ["editors_seeded", "true"]] : undefined);
+    await useSettingsStore.getState().loadSettings();
+    expect(useSettingsStore.getState().interfaceStyle).toBe(style);
+  });
+
+  it("keeps Classic when upgrading without a saved style", async () => {
+    invoke.mockResolvedValue([["editors_seeded", "true"]]);
+    await useSettingsStore.getState().loadSettings();
+    expect(useSettingsStore.getState().interfaceStyle).toBe("classic");
+  });
+
+  it("falls back to Classic for an unknown imported style", async () => {
+    invoke.mockResolvedValue([["app_interface_style", "unknown"], ["editors_seeded", "true"]]);
+    await useSettingsStore.getState().loadSettings();
+    expect(useSettingsStore.getState().interfaceStyle).toBe("classic");
+  });
+});
+
 describe("settings-store — server browser preferences", () => {
   beforeEach(() => {
     invoke.mockReset();

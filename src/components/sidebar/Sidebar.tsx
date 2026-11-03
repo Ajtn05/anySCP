@@ -1,5 +1,5 @@
 import { useRef, useCallback, useState } from "react";
-import { Monitor, Braces, Settings, ArrowUpDown, Plug, History, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { Monitor, Braces, Settings, ArrowUpDown, Plug, History, ChevronsLeft, ChevronsRight, Server } from "lucide-react";
 import { useUiStore } from "../../stores/ui-store";
 import { useTabStore, type PageId } from "../../stores/tab-store";
 import { useTransferStore } from "../../stores/transfer-store";
@@ -58,6 +58,7 @@ function PillButton({
         aria-current={isActive ? "page" : undefined}
         aria-expanded={ariaExpanded}
         className={[
+          "app-nav-button",
           "relative flex items-center rounded-lg",
           "transition-all duration-[var(--duration-fast)]",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
@@ -176,12 +177,17 @@ export function Sidebar() {
         data-sidebar-expanded={expanded}
         aria-label="Main navigation"
         className={[
+          "app-sidebar",
           "no-select flex flex-col shrink-0 h-[calc(100%-16px)] py-3 ml-2 mt-2",
           "bg-bg-surface border border-border/60 rounded-lg",
           "transition-[width] duration-[var(--duration-base)] ease-[var(--ease-expo-out)]",
           expanded ? "w-[208px] items-stretch px-3" : "w-[48px] items-center",
         ].join(" ")}
       >
+        <div className="workspace-brand" aria-label="anySCP">
+          <Server size={20} strokeWidth={1.7} aria-hidden="true" />
+          {expanded && <span>anySCP</span>}
+        </div>
         {/* Nav items */}
         <div className={`flex flex-col gap-1 ${expanded ? "" : "items-center"}`}>
           {visibleNavItems.map((item) => (

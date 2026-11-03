@@ -11,8 +11,8 @@ export function TransfersPage() {
   if (finishedCount > 0) summaryParts.push(`${finishedCount} done`);
 
   return (
-    <div className="flex flex-col h-full overflow-y-scroll bg-bg-base">
-      <div className="max-w-4xl w-full mx-auto px-8 py-8 flex flex-col gap-8">
+    <div className="workspace-page flex flex-col h-full overflow-y-scroll bg-bg-base">
+      <div className="workspace-page-content max-w-4xl w-full mx-auto px-8 py-8 flex flex-col gap-8">
         {/* Page title */}
         <div className="flex items-center justify-between gap-4">
           <div>

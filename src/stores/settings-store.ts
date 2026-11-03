@@ -5,6 +5,11 @@ import { normalizeMovePath } from "../lib/explorer-move";
 
 export type CursorStyle = "block" | "bar" | "underline";
 export type ThemeMode = "dark" | "light";
+export type InterfaceStyle = "classic" | "studio" | "workbench";
+
+export function parseInterfaceStyle(value: string | undefined): InterfaceStyle {
+  return value === "studio" || value === "workbench" ? value : "classic";
+}
 /** Which mouse button pastes the clipboard into the terminal (#71). */
 export type PasteButton = "none" | "right" | "middle";
 /** What double-clicking a file in the Explorer does. */
@@ -29,6 +34,7 @@ export interface EditorConfig {
 interface SettingsState {
   // Appearance
   themeMode: ThemeMode;
+  interfaceStyle: InterfaceStyle;
   accentHue: number;
   accentCustom: AccentCustom | null;
   interfaceFont: string;
@@ -68,6 +74,7 @@ interface SettingsState {
 
   // Actions
   setThemeMode: (mode: ThemeMode) => void;
+  setInterfaceStyle: (style: InterfaceStyle) => void;
   setAccentHue: (hue: number) => void;
   setAccentCustom: (custom: AccentCustom | null) => void;
   setInterfaceFont: (font: string) => void;
@@ -99,6 +106,7 @@ interface SettingsState {
 // Defaults
 const DEFAULTS = {
   themeMode: "dark" as ThemeMode,
+  interfaceStyle: "classic" as InterfaceStyle,
   accentHue: 250,
   accentCustom: null as AccentCustom | null,
   interfaceFont: "'Geist', system-ui, sans-serif",
@@ -226,6 +234,7 @@ let accentPersistTimer: ReturnType<typeof setTimeout> | undefined;
 export const useSettingsStore = create<SettingsState>((set) => ({
   ...DEFAULTS,
   themeMode: initialThemeMode(),
+  interfaceStyle: parseInterfaceStyle(typeof document === "undefined" ? undefined : document.documentElement.dataset.interfaceStyle),
   accentHue: initialAccentHue(),
   accentCustom: initialAccentCustom(),
   interfaceFont: initialInterfaceFont(),
@@ -235,6 +244,11 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   setThemeMode: (mode) => {
     set({ themeMode: mode });
     persist("app_theme", mode);
+  },
+
+  setInterfaceStyle: (style) => {
+    set({ interfaceStyle: style });
+    persist("app_interface_style", style);
   },
 
   setAccentHue: (hue) => {
@@ -408,6 +422,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
       for (const [key, value] of pairs) {
         switch (key) {
           case "app_theme": updates.themeMode = value === "light" ? "light" : DEFAULTS.themeMode; break;
+          case "app_interface_style": updates.interfaceStyle = parseInterfaceStyle(value); break;
           case "app_accent_hue": updates.accentHue = Number(value) || DEFAULTS.accentHue; break;
           case "app_accent_custom": {
             const parts = value.trim().split(/\s+/).map(Number);
